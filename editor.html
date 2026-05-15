@@ -1389,18 +1389,32 @@ document.querySelectorAll(".tool-btn").forEach(b => {
   b.onclick = () => setTool(b.dataset.tool);
 });
 
+// 端口几何旋转: 顺时针 90°，机器尺寸由 h*w → w*h
+// (side, pos) → ((side + 3) % 4, pos)
+// 推导见 README：旋转保持机器与"逆时针起角"同步转动，pos 不变；side 顺移
+function rotPortCW(side, pos) {
+  return [(side + 3) % 4, pos];
+}
+
 document.getElementById("btn-rotate-mach").onclick = () => {
   if (state.selected < 0) return;
   const idx = state.selected;
   const m = state.machs[idx];
-  // 交换 h/w；端口位置含义改变，需清掉该机器的 belts 与 freePorts
-  const related = state.belts.filter(b => b.frm === idx || b.to === idx);
-  const hasFree = m.freePorts && [-2,-1,1,2].some(k => (m.freePorts[k]||[]).length > 0);
-  if (related.length > 0 || hasFree) {
-    if (!confirm(`旋转将删除该机器的 ${related.length} 个连接和已声明的端口（端口位置含义改变），是否继续？`)) return;
-    state.belts = state.belts.filter(b => b.frm !== idx && b.to !== idx);
-    m.freePorts = { "-2":[], "-1":[], "1":[], "2":[] };
+  // 1. 端口变换
+  state.belts.forEach(b => {
+    if (b.frm === idx && b.frmPort) b.frmPort = rotPortCW(b.frmPort[0], b.frmPort[1]);
+    if (b.to  === idx && b.toPort)  b.toPort  = rotPortCW(b.toPort[0],  b.toPort[1]);
+  });
+  if (m.freePorts) {
+    const newFree = { "-2":[], "-1":[], "1":[], "2":[] };
+    for (const k of [-2,-1,1,2]) {
+      (m.freePorts[k] || []).forEach(([s, p]) => {
+        newFree[k].push(rotPortCW(s, p));
+      });
+    }
+    m.freePorts = newFree;
   }
+  // 2. 尺寸交换
   m.size = [m.size[1], m.size[0]];
   clipPos(m); saveState(); renderAll();
 };
