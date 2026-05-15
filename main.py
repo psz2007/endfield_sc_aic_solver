@@ -461,8 +461,14 @@ if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
                 print()
             print()
     print()
-else:
+elif status == cp_model.UNKNOWN:
+    print("TL")
+elif status == cp_model.INFEASIBLE:
     print("NO")
+elif status == cp_model.MODEL_INVALID:
+    print("Invalid model")
+else:
+    print("Return code: ", status)
 
 if _debug_on:
     print(solver.response_stats())
