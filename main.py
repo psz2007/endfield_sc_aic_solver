@@ -416,6 +416,59 @@ status = solver.Solve(md)
 # print results
 if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
     print("OK")
+
+    # ---- 导出结构化求解结果到 solution.json (供可视化编辑器使用) ----
+    import json
+    sol_machs = []
+    for id, t in enumerate(mach_var):
+        tx, ty, tr, tp, _h, _w = t
+        sol_machs.append({
+            "id": id,
+            "type": mach[id]["type"],
+            "size": list(mach[id]["size"]),
+            "pos": [solver.value(tx), solver.value(ty)],   # 求解后的左上角格子 (行, 列)
+            "rot": solver.value(tr),                        # 0/1/2/3 旋转 90° 的次数
+            "p":   bool(solver.value(tp)),                  # 是否做了镜像 (h、w 互换)
+            "occ_h": solver.value(_h),                      # 实际占用 h
+            "occ_w": solver.value(_w),                      # 实际占用 w
+            **({"dist": mach[id]["dist"]} if mach[id]["type"] == "elec" else {}),
+        })
+        # 端口实际位置（按求解器规则，参见 main.py 顶部 port[] 字典）
+        sol_ports = []
+        for d in [-2, -1, 1, 2]:
+            if d in mach[id]:
+                for pid, _ in enumerate(mach[id][d]):
+                    px, py, pd = port[(id, d, pid)]
+                    sol_ports.append({
+                        "kind": d,                          # -2/-1/1/2
+                        "orig": list(mach[id][d][pid]),     # 输入定义的 [side, pos]
+                        "cell": [solver.value(px), solver.value(py)],  # 端口所在格子 (行,列)
+                        "dir":  solver.value(pd),           # 旋转后端口朝向 0/1/2/3
+                    })
+        sol_machs[-1]["ports"] = sol_ports
+
+    # 提取每条 belt 的实际占用边
+    sol_belts = []
+    for bi, (typ, frm, to) in enumerate(belt):
+        edges = []  # 每条边记成 (cell_a, cell_b)，cell = [行, 列]
+        for i in range(n):
+            for j in range(m):
+                # d=0: 向下到 (i+1, j) ; d=1: 向右到 (i, j+1)
+                if i < n-1 and gid(i, j, 0) != -1 and solver.value(belt_var[bi][gid(i, j, 0)]):
+                    edges.append([[i, j], [i+1, j]])
+                if j < m-1 and gid(i, j, 1) != -1 and solver.value(belt_var[bi][gid(i, j, 1)]):
+                    edges.append([[i, j], [i, j+1]])
+        sol_belts.append({"type": typ, "frm": frm, "to": to, "edges": edges})
+
+    solution = {"n": n, "m": m, "machs": sol_machs, "belts": sol_belts}
+    try:
+        with open("solution.json", "w", encoding="utf-8") as f:
+            json.dump(solution, f, ensure_ascii=False, indent=2)
+        print("Solution exported to solution.json")
+    except Exception as e:
+        print(f"Failed to write solution.json: {e}")
+    # ---- 结构化输出结束 ----
+
     board = [["." for _ in range(m)] for _ in range(n)]
     for id, t in enumerate(mach_var):
         tx, ty, tr, tp, _h, _w = t
