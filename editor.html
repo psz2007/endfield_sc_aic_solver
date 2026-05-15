@@ -186,6 +186,13 @@
     color: #fff; font-size: 12px; padding: 4px 10px;
     border-bottom: 1px solid #4caf50;
   }
+  .sol-toggle {
+    background: rgba(0,0,0,0.35); color: #fff; border: 1px solid #4caf50;
+    padding: 2px 8px; border-radius: 3px; cursor: pointer; font-size: 12px;
+    margin-left: 4px; opacity: 0.45;
+  }
+  .sol-toggle:hover { opacity: 0.7; }
+  .sol-toggle.active { opacity: 1; background: rgba(255,255,255,0.15); }
   .sol-mach {
     position: absolute; box-sizing: border-box;
     border: 2px solid #fff; background: rgba(0,200,83,0.85);
@@ -204,12 +211,23 @@
   .sol-edge { fill: none; stroke-linecap: round; stroke-linejoin: round; }
   .sol-edge.t-1 { stroke: #ff9800; }
   .sol-edge.t-2 { stroke: #1e88e5; stroke-dasharray: 6 4; }
+  /* 求解结果连线默认中等亮度 */
+  .sol-edge { opacity: 0.55; }
+  /* 关联到当前选中机器的连线 → 满亮 + 发光 */
+  .sol-edge.sol-edge-hl { opacity: 1; filter: drop-shadow(0 0 4px currentColor); }
+  /* 求解结果机器：选中时高亮 */
+  .sol-mach.sol-selected {
+    box-shadow: 0 0 0 2px #ffeb3b inset, 0 0 10px rgba(255,235,59,0.8);
+    z-index: 5;
+  }
 
   /* 端口按钮 */
   .port-btn {
     position: absolute; width: 14px; height: 14px;
     border: 2px solid #9e9e9e; background: #1a1a1a; cursor: pointer;
     border-radius: 50%; padding: 0;
+    outline: 1px solid #111;
+    outline-offset: 0;
     display: flex; align-items: center; justify-content: center;
     font-size: 11px; color: #fff; line-height: 1; z-index: 5;
   }
@@ -333,10 +351,17 @@
     <div id="solution-banner" class="solution-banner" style="display:none;">
       <span id="solution-banner-text"></span>
       <span style="margin-left:14px;">
-        <span style="color:#e53935;">▶</span> 管道出
-        <span style="color:#fb8c00; margin-left:6px;">▶</span> 传送带出
-        <span style="color:#43a047; margin-left:6px;">▶</span> 传送带入
-        <span style="color:#1e88e5; margin-left:6px;">▶</span> 管道入
+        <span style="color:#ff9800;">●</span> 传送带
+        <span style="color:#1e88e5; margin-left:8px;">●</span> 管道
+        <span style="margin-left:8px; opacity:0.85;">圆点中白三角朝外=出口，朝内=入口</span>
+      </span>
+      <span style="margin-left:14px;">
+        <button id="btn-toggle-belt" class="sol-toggle active" data-kind="belt">
+          <span style="color:#ff9800;">━</span> 传送带
+        </button>
+        <button id="btn-toggle-pipe" class="sol-toggle active" data-kind="pipe">
+          <span style="color:#1e88e5;">┅</span> 管道
+        </button>
       </span>
     </div>
     <div class="canvas-wrap" id="canvas-wrap">
@@ -719,23 +744,83 @@ function renderCanvas() {
 // solution: { n, m, machs:[{id,type,size,pos,rot,p,occ_h,occ_w,...}], belts:[{type,frm,to,edges:[[[r,c],[r,c]], ...]}] }
 let solution = null;
 
+// 求解结果模式下被点选的机器 id（独立于 state.selected）
+let solSelected = -1;
+// 求解结果模式下传送带 / 管道的可见性
+let solShow = { belt: true, pipe: true };
+
 function renderSolutionOverlay(canvas) {
   const cell = state.cell;
+
   // 机器（用 sol 的 pos 与 occ_h/occ_w 渲染矩形）
   solution.machs.forEach(sm => {
     const [x, y] = sm.pos;
     const h = sm.occ_h ?? sm.size[0];
     const w = sm.occ_w ?? sm.size[1];
     const box = document.createElement("div");
-    box.className = `sol-mach t-${sm.type}`;
+    box.className = `sol-mach t-${sm.type}` + (sm.id === solSelected ? " sol-selected" : "");
     box.style.left   = ((y + PAD) * cell) + "px";
     box.style.top    = ((x + PAD) * cell) + "px";
     box.style.width  = (w * cell) + "px";
     box.style.height = (h * cell) + "px";
     const rotInfo = `${sm.rot * 90}°${sm.p ? "·镜像" : ""}`;
     box.innerHTML = `<div>#${sm.id}</div><div class="meta">${sm.type} ${rotInfo}</div>`;
+    box.style.cursor = "pointer";
+    box.addEventListener("mousedown", e => e.stopPropagation());
+    box.addEventListener("click", e => {
+      e.stopPropagation();
+      solSelected = (solSelected === sm.id) ? -1 : sm.id;
+      renderAll();
+    });
+    // 端口圆点：复用编辑器的 .port-btn 样式，定位到机器矩形内对应外边缘格子
+    // dir : 0=下 1=右 2=上 3=左 (机器外法向)
+    if (sm.ports) {
+      sm.ports.forEach(po => {
+        const isPipe = Math.abs(po.kind) === 2;
+        if (!isPipe && !solShow.belt) return;
+        if (isPipe && !solShow.pipe) return;
+
+        // 端口在机器矩形内的格子偏移
+        const ci = po.cell[0] - x;
+        const cj = po.cell[1] - y;
+        const half = 7;
+        // 该格中心
+        const gcx = cj * cell + cell / 2;
+        const gcy = ci * cell + cell / 2;
+        // 沿 dir 偏到格子外边缘
+        let left = gcx, top = gcy;
+        if (po.dir === 0)      { top  = (ci + 1) * cell; }
+        else if (po.dir === 1) { left = (cj + 1) * cell; }
+        else if (po.dir === 2) { top  = ci * cell; }
+        else /* 3 */            { left = cj * cell; }
+
+        const btn = document.createElement("button");
+        const beltType = isPipe ? 2 : 1;
+        const role = po.kind < 0 ? "out" : "in";
+        btn.className = `port-btn used-${role}-${beltType}`;
+        btn.style.left = (left - half) + "px";
+        btn.style.top  = (top  - half) + "px";
+        // 白色三角箭头：出口朝外 (沿 dir)，入口朝内 (反 dir)
+        const outArrow = ["▼", "▶", "▲", "◀"]; // 朝外: side/dir -> 字符
+        const inArrow  = ["▲", "◀", "▼", "▶"];
+        btn.textContent = (po.kind < 0 ? outArrow[po.dir] : inArrow[po.dir]);
+        const labelMap = { "-2":"管道出口", "-1":"传送带出口", "1":"传送带入口", "2":"管道入口" };
+        btn.title = `机器 #${sm.id} · ${labelMap[po.kind]}`;
+        // 非关联机器时压低视觉强度
+        const isRelated = (solSelected < 0 || solSelected === sm.id);
+        if (!isRelated) btn.style.opacity = 0.45;
+        btn.addEventListener("mousedown", e => e.stopPropagation());
+        btn.addEventListener("click", e => {
+          e.stopPropagation();
+          solSelected = (solSelected === sm.id) ? -1 : sm.id;
+          renderAll();
+        });
+        box.appendChild(btn);
+      });
+    }
     canvas.appendChild(box);
   });
+
   // belts (折线把 edges 串连)
   const svgNS = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(svgNS, "svg");
@@ -743,64 +828,23 @@ function renderSolutionOverlay(canvas) {
   svg.setAttribute("width",  workArea().W * cell);
   svg.setAttribute("height", workArea().H * cell);
   solution.belts.forEach(sb => {
+    // 可见性：根据用户切换的"显示传送带 / 管道"开关
+    if (sb.type === 1 && !solShow.belt) return;
+    if (sb.type === 2 && !solShow.pipe) return;
+    const isRelated = (solSelected >= 0 && (sb.frm === solSelected || sb.to === solSelected));
     sb.edges.forEach(([a, b]) => {
-      const line = document.createElementNS(svgNS, "line");
       const [ax, ay] = a, [bx, by] = b;
+      const line = document.createElementNS(svgNS, "line");
       line.setAttribute("x1", (ay + PAD + 0.5) * cell);
       line.setAttribute("y1", (ax + PAD + 0.5) * cell);
       line.setAttribute("x2", (by + PAD + 0.5) * cell);
       line.setAttribute("y2", (bx + PAD + 0.5) * cell);
-      line.setAttribute("class", `sol-edge t-${sb.type}`);
+      line.setAttribute("class", `sol-edge t-${sb.type}` + (isRelated ? " sol-edge-hl" : ""));
       line.setAttribute("stroke-width", Math.max(3, cell * 0.18));
       svg.appendChild(line);
     });
   });
 
-  // 端口标记：每个端口画一个三角形，颜色按 kind 区分，朝向按 dir
-  // kind: -2 管道出(红) / -1 传送带出(橙) / 1 传送带入(绿) / 2 管道入(蓝)
-  // dir : 0=下 1=右 2=上 3=左 (机器外法向)
-  const PORT_COLORS = { "-2": "#e53935", "-1": "#fb8c00", "1": "#43a047", "2": "#1e88e5" };
-  // 三角形朝向：出口(kind<0) 沿 dir 朝外；入口(kind>0) 与 dir 相反 (从外朝内)
-  const dirVec = { 0: [0, 1], 1: [1, 0], 2: [0, -1], 3: [-1, 0] };
-  solution.machs.forEach(sm => {
-    if (!sm.ports) return;
-    sm.ports.forEach(po => {
-      const [px, py] = po.cell;       // 端口所在格子 (行, 列)
-      const cx = (py + PAD + 0.5) * cell;
-      const cy = (px + PAD + 0.5) * cell;
-      const isOut = po.kind < 0;
-      // 三角形指向方向：出口=外法向；入口=相反（指向机器内）
-      const sgn = isOut ? 1 : -1;
-      const [dvx, dvy] = dirVec[po.dir];
-      // 三角形从端口中心向"指向方向"伸出
-      const r = Math.max(6, cell * 0.32);
-      // 计算三角形 3 个顶点
-      const tipX = cx + sgn * dvx * r;
-      const tipY = cy + sgn * dvy * r;
-      // 底边两端 (沿垂直方向)
-      const perpX = -dvy, perpY = dvx; // 垂直单位向量
-      const baseCx = cx - sgn * dvx * (r * 0.4);
-      const baseCy = cy - sgn * dvy * (r * 0.4);
-      const halfBase = r * 0.7;
-      const p1x = baseCx + perpX * halfBase;
-      const p1y = baseCy + perpY * halfBase;
-      const p2x = baseCx - perpX * halfBase;
-      const p2y = baseCy - perpY * halfBase;
-      const tri = document.createElementNS(svgNS, "polygon");
-      tri.setAttribute("points",
-        `${tipX},${tipY} ${p1x},${p1y} ${p2x},${p2y}`);
-      tri.setAttribute("fill", PORT_COLORS[po.kind]);
-      tri.setAttribute("stroke", "#fff");
-      tri.setAttribute("stroke-width", "1.2");
-      tri.setAttribute("opacity", "0.95");
-      // 加 title 方便鼠标悬停看
-      const title = document.createElementNS(svgNS, "title");
-      const labelMap = { "-2": "管道出口", "-1": "传送带出口", "1": "传送带入口", "2": "管道入口" };
-      title.textContent = `机器 #${sm.id} · ${labelMap[po.kind]}`;
-      tri.appendChild(title);
-      svg.appendChild(tri);
-    });
-  });
   canvas.appendChild(svg);
 }
 
@@ -1491,6 +1535,7 @@ document.getElementById("canvas-wrap").addEventListener("mousedown", e => {
   if (e.button === 1 || (e.button === 0 && isPanTarget(e.target))) {
     if (e.button === 0) {
       state.selected = -1;
+      solSelected = -1;
       if (connectFrom) connectFrom = null; // 点空白取消进行中的连接
       renderAll();
     }
@@ -1570,11 +1615,12 @@ document.getElementById("file-input-sol").onchange = e => {
         throw new Error("不是合法的 solution.json");
       }
       solution = obj;
+      solSelected = -1;
       document.body.classList.add("show-solution");
       const banner = document.getElementById("solution-banner");
       banner.style.display = "";
       document.getElementById("solution-banner-text").textContent =
-        `已加载求解结果：${obj.machs.length} 个机器，${obj.belts.length} 条连接，网格 ${obj.n}×${obj.m}（编辑功能已暂时禁用）`;
+        `已加载求解结果：${obj.machs.length} 个机器，${obj.belts.length} 条连接，网格 ${obj.n}×${obj.m} · 点击机器可高亮关联连接`;
       document.getElementById("btn-clear-solution").style.display = "";
       // 若 solution 的 n/m 跟当前状态不同，提示但不强行覆盖
       if (obj.n !== state.n || obj.m !== state.m) {
@@ -1588,11 +1634,24 @@ document.getElementById("file-input-sol").onchange = e => {
 
 document.getElementById("btn-clear-solution").onclick = () => {
   solution = null;
+  solSelected = -1;
   document.body.classList.remove("show-solution");
   document.getElementById("solution-banner").style.display = "none";
   document.getElementById("btn-clear-solution").style.display = "none";
   renderAll();
 };
+
+// 求解结果模式下：切换传送带/管道可见性
+function bindSolToggle(btnId, kind) {
+  document.getElementById(btnId).onclick = (e) => {
+    e.stopPropagation();
+    solShow[kind] = !solShow[kind];
+    document.getElementById(btnId).classList.toggle("active", solShow[kind]);
+    renderAll();
+  };
+}
+bindSolToggle("btn-toggle-belt", "belt");
+bindSolToggle("btn-toggle-pipe", "pipe");
 
 // 初始化
 renderPalette();
