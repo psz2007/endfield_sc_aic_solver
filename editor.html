@@ -166,9 +166,8 @@
     overflow: visible;
   }
   .belt-line { fill: none; stroke-linecap: round; }
-  .belt-line.t-1 { stroke: #ffd54f; }       /* 传送带 黄 */
-  .belt-line.t-2 { stroke: #4fc3f7; }       /* 管道 蓝 */
-  .belt-line.t-2 { stroke-dasharray: 6 4; } /* 管道虚线区分 */
+  .belt-line.t-1 { stroke: #ff9800; }                          /* 传送带 橙 */
+  .belt-line.t-2 { stroke: #1e88e5; stroke-dasharray: 6 4; }   /* 管道 蓝 (虚线) */
   .belt-line.dim { opacity: 0.25; }
   .belt-line.hl  { opacity: 1; filter: drop-shadow(0 0 4px currentColor); }
   .belt-arrow { fill: currentColor; }
@@ -203,8 +202,8 @@
 
   .sol-svg { position: absolute; left: 0; top: 0; pointer-events: none; }
   .sol-edge { fill: none; stroke-linecap: round; stroke-linejoin: round; }
-  .sol-edge.t-1 { stroke: #ffd54f; }
-  .sol-edge.t-2 { stroke: #4fc3f7; stroke-dasharray: 6 4; }
+  .sol-edge.t-1 { stroke: #ff9800; }
+  .sol-edge.t-2 { stroke: #1e88e5; stroke-dasharray: 6 4; }
 
   /* 端口按钮 */
   .port-btn {
@@ -215,15 +214,17 @@
     font-size: 11px; color: #fff; line-height: 1; z-index: 5;
   }
   .port-btn:hover { transform: scale(1.5); z-index: 11; box-shadow: 0 0 6px #fff; }
-  /* 已被某条 belt 占用 */
-  .port-btn.used-out-1 { background: #ff9800; border-color: #ffd54f; }
-  .port-btn.used-in-1  { background: #ffd54f; border-color: #ff9800; }
-  .port-btn.used-out-2 { background: #2196f3; border-color: #4fc3f7; }
-  .port-btn.used-in-2  { background: #4fc3f7; border-color: #2196f3; }
+  /* 已被某条 belt 占用 (传送带统一橙、管道统一蓝) */
+  .port-btn.used-out-1, .port-btn.used-in-1 { background: #ff9800; border-color: #ff9800; }
+  .port-btn.used-out-2, .port-btn.used-in-2 { background: #1e88e5; border-color: #1e88e5; }
   /* 连接模式中第一个被点中的端口 */
   .port-btn.connecting { background: #fff; border-color: #ffeb3b; box-shadow: 0 0 8px #ffeb3b; }
+  /* 空闲端口（已声明但未连）：实线圆边 + 持续彩色光晕（区别于已连端口） */
+  .port-btn.free-port { border-style: solid; border-width: 2px; }
+  .port-btn.free-port.used-out-1, .port-btn.free-port.used-in-1 { box-shadow: 0 0 6px 2px #ffb74d; }
+  .port-btn.free-port.used-out-2, .port-btn.free-port.used-in-2 { box-shadow: 0 0 6px 2px #64b5f6; }
   /* 鼠标悬停在 belt/pipe 工具上时高亮可点 */
-  body.tool-belt .port-btn, body.tool-pipe .port-btn { border-color: #fff; }
+  body.tool-belt .port-btn, body.tool-pipe .port-btn { border-color: #fff; border-style: solid; }
 
   /* === 右侧 === */
   .field-row { display: flex; align-items: center; gap: 6px; font-size: 13px; }
@@ -271,6 +272,7 @@
 
   .empty-tip { color: #888; padding: 20px; text-align: center; }
 </style>
+<script src="presets.js"></script>
 </head>
 <body>
 <header>
@@ -297,13 +299,14 @@
     <div class="palette-group" id="palette"></div>
     <h2 style="margin-top:8px;">使用提示</h2>
     <div class="hint">
-      <b>平移工具</b>：默认工具，按住空白处或机器拖动；点击机器可选中。<br>
-      <b>传送带 / 管道工具</b>：点中一个机器边缘的端口圆点开始连接，再点另一个机器的端口完成；自动确定端口出/入方向。<br>
-      <b>右键</b>已有连接线可断开。
+      <b>平移工具</b>：拖动机器或空白处平移；点机器选中；选中后<b>点边缘端口圆点循环切换</b>"空闲端口声明"（无 → 管出 → 带出 → 带入 → 管入）。<br>
+      <b>传送带 / 管道工具</b>：点中一个机器边缘的端口圆点开始连接，再点另一个机器的端口完成；自动确定出/入方向。<br>
+      <b>右键</b>端口可删除占用它的连接 / 空闲声明。<br>
+      <span style="color:#aaa;">空闲端口（虚线圆边）= 物理上有但未连传送带/管道，会作为求解器候选位置。</span>
     </div>
     <div class="legend">
-      <div class="legend-item"><span class="legend-dot" style="background:#ffd54f"></span>传送带连接</div>
-      <div class="legend-item"><span class="legend-dot" style="background:#4fc3f7"></span>管道连接</div>
+      <div class="legend-item"><span class="legend-dot" style="background:#ff9800"></span>传送带连接</div>
+      <div class="legend-item"><span class="legend-dot" style="background:#1e88e5"></span>管道连接</div>
       <div class="legend-item"><span class="legend-dot" style="background:#9e9e9e"></span>空闲端口</div>
     </div>
   </aside>
@@ -405,20 +408,12 @@ function toast(msg) {
   toast._t = setTimeout(() => el.classList.remove("show"), 1500);
 }
 
-// ========== 调色板 (常用机器预设，端口由用户后续点选) ==========
-// 每个项: {label, type, size:[h,w], dist?}
-const PALETTE = [
-  { label: "机器 1×1", type:"mach", size:[1,1] },
-  { label: "机器 2×2", type:"mach", size:[2,2] },
-  { label: "机器 3×3", type:"mach", size:[3,3] },
-  { label: "机器 4×4", type:"mach", size:[4,4] },
-  { label: "机器 5×5", type:"mach", size:[5,5] },
-  { label: "机器 4×6", type:"mach", size:[4,6] },
-  { label: "仓库 3×3", type:"stor", size:[3,3] },
-  { label: "存取口 1×3", type:"port", size:[1,3] },
-  { label: "电桩 2×2", type:"elec", size:[2,2], dist:5 },
-  { label: "分汇流器 1×1", type:"logi", size:[1,1] },
-];
+// ========== 调色板（预设机器） ==========
+// 数据来源：presets.js (window.AIC_PRESETS)
+// 每项: { label, type, size:[h,w], dist?, freePorts:{"-2":[],"-1":[],"1":[],"2":[]} }
+// 放下机器时会自动把 freePorts 复制到 mach.freePorts，作为求解器的候选位置；
+// 用户仍可在画布上对端口进行连接 / 修改。
+const PALETTE = (window.AIC_PRESETS || []);
 
 // ========== 示例 (test 1) ==========
 const EXAMPLE = {
@@ -449,9 +444,17 @@ function ensurePorts(m) {
   // 不再使用 m.ports；端口完全由 belts 维护。
 }
 function clonePalette(p) {
+  // 深拷贝 freePorts；空字段补全
+  const fp = { "-2":[], "-1":[], "1":[], "2":[] };
+  if (p.freePorts) {
+    for (const k of [-2,-1,1,2]) {
+      fp[k] = (p.freePorts[k] || []).map(arr => [...arr]);
+    }
+  }
   return {
     type: p.type,
     size: [...p.size],
+    freePorts: fp,
     ...(p.dist !== undefined ? {dist: p.dist} : {}),
   };
 }
@@ -460,19 +463,56 @@ function clonePalette(p) {
 // 返回 mach idx 上所有"使用中"的端口，以 Map(key=side,pos -> {kind, beltIdx, role})
 // kind = -2 / -1 / 1 / 2
 // role = "from" | "to"
+// 返回 mach idx 上所有被使用 / 声明的端口
+// 优先级：belt 占用的端口 > freePorts 声明的空闲端口
 function portsOfMach(idx) {
   const result = new Map();
   state.belts.forEach((b, bi) => {
     if (b.frm === idx && b.frmPort) {
       const [s,p] = b.frmPort;
-      result.set(`${s},${p}`, { side:s, pos:p, kind:-b.type, beltIdx:bi, role:"from" });
+      result.set(`${s},${p}`, { side:s, pos:p, kind:-b.type, beltIdx:bi, role:"from", free:false });
     }
     if (b.to === idx && b.toPort) {
       const [s,p] = b.toPort;
-      result.set(`${s},${p}`, { side:s, pos:p, kind:b.type, beltIdx:bi, role:"to" });
+      result.set(`${s},${p}`, { side:s, pos:p, kind:b.type, beltIdx:bi, role:"to", free:false });
     }
   });
+  // 合并 freePorts (空闲声明：仅在该位置未被 belt 占用时生效)
+  const m = state.machs[idx];
+  if (m && m.freePorts) {
+    for (const k of [-2,-1,1,2]) {
+      (m.freePorts[k] || []).forEach(([s,p]) => {
+        const key = `${s},${p}`;
+        if (!result.has(key)) {
+          result.set(key, { side:s, pos:p, kind:k, role: k<0 ? "from":"to", free:true });
+        }
+      });
+    }
+  }
   return result;
+}
+
+// 确保 mach 的 freePorts 字段存在
+function ensureFreePorts(m) {
+  if (!m.freePorts) m.freePorts = { "-2":[], "-1":[], "1":[], "2":[] };
+  for (const k of [-2,-1,1,2]) if (!m.freePorts[k]) m.freePorts[k] = [];
+}
+// 在 freePorts 中查找指定 (side,pos)，返回 kind 或 0
+function freePortKindAt(idx, side, pos) {
+  const m = state.machs[idx];
+  if (!m || !m.freePorts) return 0;
+  for (const k of [-2,-1,1,2]) {
+    if ((m.freePorts[k] || []).some(p => p[0] === side && p[1] === pos)) return k;
+  }
+  return 0;
+}
+// 删除某机器某 (side,pos) 处的所有 freePort 声明
+function removeFreePortAt(idx, side, pos) {
+  const m = state.machs[idx];
+  ensureFreePorts(m);
+  for (const k of [-2,-1,1,2]) {
+    m.freePorts[k] = m.freePorts[k].filter(p => !(p[0] === side && p[1] === pos));
+  }
 }
 // 检查 (idx, side, pos) 是否已被占用
 function isPortUsed(idx, side, pos) {
@@ -540,6 +580,7 @@ function findFreePos(h, w) {
 function addMachFromPalette(p) {
   const m = clonePalette(p);
   ensurePorts(m);
+  if (p.label) m.note = p.label;
   m.pos = findFreePos(m.size[0], m.size[1]);
   state.machs.push(m);
   state.selected = state.machs.length - 1;
@@ -567,11 +608,15 @@ function renderPalette() {
     btn.className = "palette-btn";
     const [h, w] = p.size;
     const px = Math.min(28, Math.floor(56 / Math.max(h, w)));
+    // 计算自由口数量
+    let fpCount = 0;
+    if (p.freePorts) for (const k of [-2,-1,1,2]) fpCount += (p.freePorts[k] || []).length;
+    const fpInfo = fpCount > 0 ? ` · ${fpCount} 口` : "";
     btn.innerHTML = `
       <span class="mini-shape" style="width:${w*px}px; height:${h*px}px; background:${typeColor(p.type)};"></span>
       <span class="desc">
         <span class="name"><span class="type-pill type-${p.type}">${p.type}</span>${p.label}</span>
-        <span class="sub">${h} × ${w}${p.dist?` · 半径 ${p.dist}`:''}</span>
+        <span class="sub">${h} × ${w}${p.dist?` · 半径 ${p.dist}`:''}${fpInfo}</span>
       </span>
     `;
     btn.onclick = () => addMachFromPalette(p);
@@ -830,7 +875,7 @@ function renderBeltLines(canvas) {
     arrow.setAttribute("cx", x2); arrow.setAttribute("cy", y2);
     arrow.setAttribute("r", Math.max(3, cell * 0.08));
     arrow.setAttribute("class", cls.replace("belt-line", "belt-arrow"));
-    arrow.setAttribute("fill", b.type === 1 ? "#ffd54f" : "#4fc3f7");
+    arrow.setAttribute("fill", b.type === 1 ? "#ff9800" : "#1e88e5");
     arrow.style.opacity = (state.selected >= 0 && isRelated) ? 1 : 0.25;
     svg.appendChild(arrow);
   });
@@ -844,20 +889,23 @@ function addPortButtons(box, idx, cell) {
   const [h, w] = m.size;
   const usedMap = portsOfMach(idx);
   const half = 7;
-  // 该机器在工具非 pan 模式 / 已经在连接中 / 被选中时，显示**所有**边缘可点端口；
-  // 在 pan 模式下，仅显示已被使用的端口（作为信息展示）
+  // 显示策略：
+  //  - 在 belt/pipe 工具下：显示所有边缘可点端口（待选）
+  //  - 在 pan 工具下：仅显示已使用 (belt) 或已声明 (freePort) 的端口；
+  //    若机器被选中，则显示所有边缘端口（让用户可点亮新位置）
   const showAll = (state.tool !== "pan") || (state.selected === idx);
 
   const place = (side, pos, left, top) => {
     const key = `${side},${pos}`;
     const used = usedMap.get(key);
-    if (!showAll && !used) return; // pan 模式下隐藏未使用端口
+    if (!showAll && !used) return;
     const btn = document.createElement("button");
     let cls = "port-btn";
     if (used) {
-      // role: from/to ; b.type: 1/2
-      const b = state.belts[used.beltIdx];
-      cls += ` used-${used.role === "from" ? "out" : "in"}-${b.type}`;
+      // 已使用 (belt / freePort)。kind: -2/-1/+1/+2；role: from/to
+      const beltType = Math.abs(used.kind);
+      cls += ` used-${used.role === "from" ? "out" : "in"}-${beltType}`;
+      if (used.free) cls += " free-port";
     }
     if (connectFrom && connectFrom.idx === idx && connectFrom.side === side && connectFrom.pos === pos) {
       cls += " connecting";
@@ -865,10 +913,14 @@ function addPortButtons(box, idx, cell) {
     btn.className = cls;
     btn.style.left = left + "px";
     btn.style.top  = top + "px";
+    const labelMap = { "-2":"管道出", "-1":"传送带出", "1":"传送带入", "2":"管道入" };
     btn.title = `机器 #${idx} 边${side} 位${pos}` +
-      (used ? ` (${used.role === "from" ? "出" : "入"} · belt ${used.beltIdx})` : " (空)");
+      (used
+        ? (used.free
+            ? ` (空闲声明: ${labelMap[used.kind]})`
+            : ` (${used.role === "from" ? "出" : "入"} · belt ${used.beltIdx})`)
+        : " (未使用)");
     // 三角朝向：出口指向机器外侧，入口指向机器内侧
-    // side 0=下 1=右 2=上 3=左
     const outArrow = ["▼", "▶", "▲", "◀"];
     const inArrow  = ["▲", "◀", "▼", "▶"];
     btn.textContent = used ? (used.role === "from" ? outArrow[side] : inArrow[side]) : "";
@@ -876,7 +928,8 @@ function addPortButtons(box, idx, cell) {
     btn.addEventListener("click", e => { e.stopPropagation(); onPortClick(idx, side, pos); });
     btn.addEventListener("contextmenu", e => {
       e.preventDefault(); e.stopPropagation();
-      if (used) removeBelt(used.beltIdx);
+      if (used && !used.free) removeBelt(used.beltIdx);
+      else if (used && used.free) { removeFreePortAt(idx, side, pos); saveState(); renderAll(); }
     });
     box.appendChild(btn);
   };
@@ -897,9 +950,29 @@ let connectFrom = null;
 
 function onPortClick(idx, side, pos) {
   if (state.tool === "pan") {
-    // pan 模式下点端口不操作（机器选中由机器点击处理）
+    // pan 模式：循环切换该端口的"空闲端口声明"
+    // 如果已被 belt 占用则不能改，提示删除连接
+    const used = portsOfMach(idx).get(`${side},${pos}`);
+    if (used && !used.free) {
+      if (confirm(`该端口已被 belt #${used.beltIdx} 占用，是否删除该连接？`)) {
+        removeBelt(used.beltIdx);
+      } else {
+        state.selected = idx; renderAll();
+      }
+      return;
+    }
+    // 循环：0 → -2 → -1 → +1 → +2 → 0
+    const order = [0, -2, -1, 1, 2];
+    const cur = freePortKindAt(idx, side, pos);
+    const next = order[(order.indexOf(cur) + 1) % order.length];
+    const m = state.machs[idx];
+    ensureFreePorts(m);
+    // 先移除当前
+    removeFreePortAt(idx, side, pos);
+    // 加入新的（next === 0 表示移除）
+    if (next !== 0) m.freePorts[next].push([side, pos]);
     state.selected = idx;
-    renderAll();
+    saveState(); renderAll();
     return;
   }
   // belt / pipe 模式
@@ -907,12 +980,14 @@ function onPortClick(idx, side, pos) {
 
   // 若该端口已被某条 belt 占用：第一次点提示删除
   const used = portsOfMach(idx).get(`${side},${pos}`);
-  if (used && !connectFrom) {
+  if (used && !used.free && !connectFrom) {
     if (confirm(`该端口已被 belt #${used.beltIdx} 占用，是否删除该连接？`)) {
       removeBelt(used.beltIdx);
     }
     return;
   }
+  // 若该端口是 freePort 声明：连接时自动消耗它（合并到 belt 中）
+  // 不在这里立刻删除，等连接成功再清
 
   if (!connectFrom) {
     // 开始连接
@@ -924,11 +999,9 @@ function onPortClick(idx, side, pos) {
   }
   // 完成连接
   if (connectFrom.beltType !== beltType) {
-    // 用户中途切换了工具，按当前工具类型走
     connectFrom.beltType = beltType;
   }
   if (connectFrom.idx === idx && connectFrom.side === side && connectFrom.pos === pos) {
-    // 同一端口取消
     connectFrom = null; renderAll();
     return;
   }
@@ -936,7 +1009,7 @@ function onPortClick(idx, side, pos) {
     toast("起终点不能是同一个机器");
     return;
   }
-  if (used) {
+  if (used && !used.free) {
     toast("终点端口已被占用");
     return;
   }
@@ -946,6 +1019,9 @@ function onPortClick(idx, side, pos) {
     frm: connectFrom.idx, frmPort: [connectFrom.side, connectFrom.pos],
     to: idx, toPort: [side, pos],
   });
+  // 起点 / 终点的 freePort 声明此时被消耗
+  removeFreePortAt(connectFrom.idx, connectFrom.side, connectFrom.pos);
+  removeFreePortAt(idx, side, pos);
   connectFrom = null;
   saveState(); renderAll();
 }
@@ -1034,12 +1110,28 @@ function renderDetail() {
     const role = isFrm ? "出" : "入";
     const typLabel = b.type === 1 ? "带" : "管";
     return `<div class="hint" style="display:flex; gap:4px; align-items:center;">
-      <span style="color:${b.type===1?'#ffd54f':'#4fc3f7'}; font-weight:bold;">[${typLabel}]</span>
+      <span style="color:${b.type===1?'#ff9800':'#1e88e5'}; font-weight:bold;">[${typLabel}]</span>
       ${role} 边${myPort[0]}位${myPort[1]} → 机器 #${other}
       <span style="flex:1"></span>
       <button class="del-btn" data-bi="${bi}" style="background:#c62828;border:none;color:#fff;padding:0 4px;border-radius:2px;cursor:pointer;font-size:10px;">删</button>
     </div>`;
   }).join("");
+  // 空闲端口列表
+  ensureFreePorts(m);
+  const fpItems = [];
+  const fpLabel = { "-2":"管道出", "-1":"传送带出", "1":"传送带入", "2":"管道入" };
+  const fpColor = { "-2":"#e53935", "-1":"#fb8c00", "1":"#43a047", "2":"#1e88e5" };
+  for (const k of [-2,-1,1,2]) {
+    (m.freePorts[k] || []).forEach((p, i) => {
+      fpItems.push(`<div class="hint" style="display:flex; gap:4px; align-items:center;">
+        <span style="color:${fpColor[k]}; font-weight:bold;">[${fpLabel[k]}]</span>
+        边${p[0]} 位${p[1]}
+        <span style="flex:1"></span>
+        <button class="del-fp" data-k="${k}" data-s="${p[0]}" data-p="${p[1]}" style="background:#c62828;border:none;color:#fff;padding:0 4px;border-radius:2px;cursor:pointer;font-size:10px;">删</button>
+      </div>`);
+    });
+  }
+  const freePortsHtml = fpItems.join("");
   root.innerHTML = `
     <div class="field-row">
       <label>编号</label>
@@ -1064,6 +1156,8 @@ function renderDetail() {
     </div>
     <div class="hint" style="margin-top:4px;">关联连接：</div>
     ${beltsHtml || '<div class="hint" style="color:#666;">(无)</div>'}
+    <div class="hint" style="margin-top:4px;">空闲端口（声明但未连）：</div>
+    ${freePortsHtml || '<div class="hint" style="color:#666;">(无)</div>'}
   `;
   document.getElementById("d-type").value = m.type;
   document.getElementById("d-type").onchange = e => {
@@ -1097,6 +1191,14 @@ function renderDetail() {
       removeBelt(bi);
     };
   });
+  // 空闲端口删除
+  root.querySelectorAll(".del-fp").forEach(btn => {
+    btn.onclick = e => {
+      e.stopPropagation();
+      removeFreePortAt(state.selected, parseInt(btn.dataset.s), parseInt(btn.dataset.p));
+      saveState(); renderAll();
+    };
+  });
 }
 function clipPos(m) {
   // 限制到工作区内（求解区域 + 一圈 pad），不强制必须在 n*m 内
@@ -1105,7 +1207,7 @@ function clipPos(m) {
   m.pos[1] = Math.max(-wa.pad, Math.min(state.m + wa.pad - m.size[1], m.pos[1]));
 }
 function cleanupPorts(m) {
-  // 当机器尺寸变化时，移除其上 belts 中越界的端口（连同对应 belt 一起删除）
+  // 当机器尺寸变化时，移除其上 belts 中越界的端口（连同对应 belt 一起删除），同时清理 freePorts
   const [h, w] = m.size;
   const validPort = (s, pos) => (s === 0 || s === 2) ? (pos >= 0 && pos < w) : (pos >= 0 && pos < h);
   const idx = state.machs.indexOf(m);
@@ -1114,6 +1216,11 @@ function cleanupPorts(m) {
     if (b.to  === idx && b.toPort  && !validPort(b.toPort[0],  b.toPort[1]))  return false;
     return true;
   });
+  if (m.freePorts) {
+    for (const k of [-2,-1,1,2]) {
+      m.freePorts[k] = (m.freePorts[k] || []).filter(p => validPort(p[0], p[1]));
+    }
+  }
 }
 
 // ========== belt 列表（只读 + 删除） ==========
@@ -1128,7 +1235,7 @@ function renderBeltList() {
     const div = document.createElement("div");
     div.className = "belt-item";
     const typLabel = b.type === 1 ? "带" : "管";
-    const typColor = b.type === 1 ? "#ffd54f" : "#4fc3f7";
+    const typColor = b.type === 1 ? "#ff9800" : "#1e88e5";
     const fp = b.frmPort ? `[${b.frmPort[0]},${b.frmPort[1]}]` : "?";
     const tp = b.toPort  ? `[${b.toPort[0]},${b.toPort[1]}]`  : "?";
     div.innerHTML = `
@@ -1151,12 +1258,21 @@ function renderBeltList() {
 
 // ========== 代码生成 ==========
 function generateCode() {
-  // 从 belts 聚合每个机器使用的端口
+  // 从 belts 聚合每个机器使用的端口；再合并 freePorts 中声明但未用的
   const portMap = state.machs.map(() => ({ "-2":[], "-1":[], "1":[], "2":[] }));
-  // 端口列表保留插入顺序（不去重需求由 onPortClick 保证）
   state.belts.forEach(b => {
     if (b.frmPort && portMap[b.frm]) portMap[b.frm][-b.type].push(b.frmPort);
     if (b.toPort  && portMap[b.to])  portMap[b.to][ b.type].push(b.toPort);
+  });
+  // 追加 freePorts，但跳过已经被 belts 占用的位置（防止重复）
+  state.machs.forEach((m, i) => {
+    if (!m.freePorts) return;
+    for (const k of [-2,-1,1,2]) {
+      (m.freePorts[k] || []).forEach(([s, p]) => {
+        const dup = portMap[i][k].some(q => q[0] === s && q[1] === p);
+        if (!dup) portMap[i][k].push([s, p]);
+      });
+    }
   });
   // belt 编号 = 该端口在对应数组里的 index
   const portIdx = (i, kind, port) => {
@@ -1277,11 +1393,13 @@ document.getElementById("btn-rotate-mach").onclick = () => {
   if (state.selected < 0) return;
   const idx = state.selected;
   const m = state.machs[idx];
-  // 交换 h/w；与该机器关联的连接其端口位置含义会变，需删除这些连接
+  // 交换 h/w；端口位置含义改变，需清掉该机器的 belts 与 freePorts
   const related = state.belts.filter(b => b.frm === idx || b.to === idx);
-  if (related.length > 0) {
-    if (!confirm(`旋转将删除该机器的 ${related.length} 个连接（端口位置含义改变），是否继续？`)) return;
+  const hasFree = m.freePorts && [-2,-1,1,2].some(k => (m.freePorts[k]||[]).length > 0);
+  if (related.length > 0 || hasFree) {
+    if (!confirm(`旋转将删除该机器的 ${related.length} 个连接和已声明的端口（端口位置含义改变），是否继续？`)) return;
     state.belts = state.belts.filter(b => b.frm !== idx && b.to !== idx);
+    m.freePorts = { "-2":[], "-1":[], "1":[], "2":[] };
   }
   m.size = [m.size[1], m.size[0]];
   clipPos(m); saveState(); renderAll();
@@ -1398,6 +1516,7 @@ document.getElementById("file-input").onchange = e => {
       if (!Array.isArray(obj.machs)) throw new Error("invalid");
       obj.machs.forEach(m => {
         ensurePorts(m);
+        ensureFreePorts(m);
         if (!Array.isArray(m.pos)) m.pos = [0, 0];
       });
       state = {
