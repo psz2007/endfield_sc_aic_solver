@@ -38,6 +38,8 @@ python main.py --input problems/test1.aic.json --output-dir solutions/
 
 输出文件命名规则：`<name>_solution.json`。`<name>` 优先级 = `--name` > 输入文件 JSON 的 `name` 字段 > 输入文件名（不含扩展名）> `solution`。已存在时自动追加 `_2`/`_3` 等编号。求解结果中 `problem` 字段会回带输入文件里的 `name` / `description` / `note`。
 
+> **`_optimal=True` 时的增量保存**：在 `main.py` 顶部把 `_optimal` 设为 `True` 后，求解器会以"最小化总传送带 / 管道占用格子数"为目标进行优化搜索。这种模式下程序会注册一个 `CpSolverSolutionCallback`：**每当求解器找到一个比之前更优的可行解，就立刻覆盖写入到 `<name>_solution.json`**。这样即使被 `_max_timeout` 截断、或用户主动 Ctrl+C，磁盘上保留的也是当前已知最优解；搜索完整结束时再做一次"final"写入作为最终版本。日志里每次中途写入会有 `Solution exported to ... (intermediate #N, obj=...)` 标记，结束的 `OK` 会区分 `OPTIMAL`（已证明最优）/ `FEASIBLE`（仅可行，超时未证明最优）。
+
 `.aic.json` 文件结构（编辑器顶部点 **「导出问题 (.aic.json)」** 可一键生成）：
 
 ```jsonc
