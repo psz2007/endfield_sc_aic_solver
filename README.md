@@ -22,6 +22,40 @@ Further instructions and detailed settings can be seen at the beginning of `main
 
 运行方法 `pip install -r requirements.txt` 然后 `python main.py`。
 
+`main.py` 也支持命令行参数：
+
+| 参数 | 说明 |
+|---|---|
+| `-i / --input <path>` | 指定 `.aic.json` 输入文件（替代文件内的内联默认数据） |
+| `-o / --output-dir <dir>` | `*_solution.json` 的输出目录（默认当前目录） |
+| `--name <str>` | 覆盖问题名称，影响输出文件名 |
+
+示例：
+
+```bash
+python main.py --input problems/test1.aic.json --output-dir solutions/
+```
+
+输出文件命名规则：`<name>_solution.json`。`<name>` 优先级 = `--name` > 输入文件 JSON 的 `name` 字段 > 输入文件名（不含扩展名）> `solution`。已存在时自动追加 `_2`/`_3` 等编号。求解结果中 `problem` 字段会回带输入文件里的 `name` / `description` / `note`。
+
+`.aic.json` 文件结构（编辑器顶部点 **「导出 .aic.json (给求解器)」** 可一键生成）：
+
+```jsonc
+{
+  "name": "test1",              // 问题名 (可选)
+  "description": "...",         // 描述 (可选)
+  "note": "...",                // 备注 (可选)
+  "n": 10, "m": 10,             // 网格行/列
+  "mach": [                     // 与 main.py 中 mach 字段语义一致
+    { "type": "mach", "size": [5,5],
+      "-2": [[3,1],[3,3]], "-1": [[2,1],[2,3]],
+      "1":  [[0,1],[0,3]], "2":  [[1,1],[1,3]] },
+    ...
+  ],
+  "belt": [ [2,0,2], [1,6,3], ... ]
+}
+```
+
 ### 可视化编辑器（推荐）
 
 为了避免手工填写 `mach` / `belt` 等数据结构，仓库中提供了一个**纯前端单文件**可视化编辑器 `editor.html`，直接用浏览器打开即可使用（无需任何后端 / 依赖）。
@@ -34,9 +68,9 @@ Further instructions and detailed settings can be seen at the beginning of `main
     - **平移工具 (V)**：按住机器拖动 / 按住空白处拖动平移整张画布（也可用中键拖动）；点机器选中、按方向键微调一格；按 `Delete` 删除；
     - **传送带工具 (B)** / **管道工具 (P)**：点中第一个机器边缘的端口圆点开始连接，再点另一个机器的端口完成；端口的出 / 入方向由 belt 自动确定，无需手工选；右键端口可断开已有连接；
     - **回到中心**、**旋转 (h↔w 互换，自动重映射端口位置)**、**删除选中** 等辅助按钮；
-- **右侧详情面板**：选中机器后可改类型 / 尺寸 / 电桩半径 / 备注（备注会实时显示在画布机器上）；列出该机器关联的所有连接，可单条删除；
+- **右侧详情面板**：顶部填写**问题名称 / 描述 / 备注**（用于 `.aic.json` 导出和 `solution.json` 文件命名）；选中机器后可改类型 / 尺寸 / 电桩半径 / 备注（备注会实时显示在画布机器上）；列出该机器关联的所有连接，可单条删除；
 - **右下代码预览**：实时生成与 `main.py` 兼容的 Python 代码片段，「复制」一键放入剪贴板，或「下载 .py」；
-- **顶部全局工具栏**：设置 `n` / `m` / 缩放滑动条；支持鼠标滚轮以光标位置为中心缩放；可导出 / 导入 JSON 备份方案、加载内置示例（即 `tests.py` 中的 test 1）。
+- **顶部全局工具栏**：设置 `n` / `m` / 缩放滑动条；支持鼠标滚轮以光标位置为中心缩放；可一键 **「导出 .aic.json」** 给求解器使用，或导出 / 导入完整 JSON 备份、加载内置示例。
 
 数据自动保存到浏览器 `localStorage`，刷新不丢失。
 
@@ -109,5 +143,5 @@ Further instructions and detailed settings can be seen at the beginning of `main
 ### Credit
 
 - Google OR-Tools
-- 提出问题以及制作可视化工具的群友 kokobird
+- 提出问题的群友 kokobird
 - 原题目作者

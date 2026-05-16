@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 @author: psz2007 (Entelecheia#2049)
-@coauthor: vortexer99 (kokobird)
+@coauthor: vortexer99 (可视化网页前端及主程序配置可视化接口)
 """
 
 # environment constants
@@ -78,6 +78,75 @@ belt = [
 n = 10
 m = 10
 # === facility & belt data ENDS HERE ===
+
+# ===== 命令行参数：可用 --input 覆盖上面的内联默认数据 =====
+import argparse, os, json, sys
+_parser = argparse.ArgumentParser(
+    description="终末地小型工厂摆放求解器。可使用 --input 指定 .aic.json 输入文件；不传则使用本文件内默认数据。",
+    formatter_class=argparse.RawDescriptionHelpFormatter,
+)
+_parser.add_argument("--input", "-i", default=None,
+    help="输入 .aic.json 文件路径（含 mach / belt / n / m，可附 name / description / note）")
+_parser.add_argument("--output-dir", "-o", default=".",
+    help="solution.json 的输出目录（默认当前目录）")
+_parser.add_argument("--name", default=None,
+    help="问题名称，用于命名输出文件；默认取输入文件 name 字段或文件名")
+_args, _ = _parser.parse_known_args()
+
+# 问题元数据（用于回写到 solution.json 并参与文件命名）
+_problem_meta = {"name": None, "description": None, "note": None}
+_input_basename = None   # 输入文件名（不含扩展），用作默认 name 的回退
+_input_data = None       # 输入文件的原始 JSON (供 solution 回写编辑器布局信息)
+
+if _args.input:
+    if not os.path.isfile(_args.input):
+        print(f"Input file not found: {_args.input}", file=sys.stderr)
+        sys.exit(2)
+    with open(_args.input, "r", encoding="utf-8") as _f:
+        _data = json.load(_f)
+    _input_data = _data
+    for _k in ("mach", "belt", "n", "m"):
+        if _k not in _data:
+            print(f"Input file missing required field: {_k}", file=sys.stderr)
+            sys.exit(2)
+    # JSON 中 mach[i] 的端口键是字符串 "-2"/"-1"/"1"/"2"，转回 int
+    def _normalize_mach(item):
+        out = {}
+        for k, v in item.items():
+            if isinstance(k, str) and k.lstrip("-").isdigit():
+                out[int(k)] = v
+            else:
+                out[k] = v
+        return out
+    mach = [_normalize_mach(it) for it in _data["mach"]]
+    belt = _data["belt"]
+    n = int(_data["n"])
+    m = int(_data["m"])
+    for _k in ("name", "description", "note"):
+        if _k in _data: _problem_meta[_k] = _data[_k]
+    _input_basename = os.path.splitext(os.path.basename(_args.input))[0]
+    print(f"Loaded input: {_args.input}")
+    if _problem_meta["name"]:
+        print(f"Problem name: {_problem_meta['name']}")
+
+# 命令行 --name 优先级最高
+if _args.name:
+    _problem_meta["name"] = _args.name
+
+# 生成最终的 solution 输出文件路径（重名递增 _2 _3 ...）
+def _resolve_solution_path():
+    stem = _problem_meta["name"] or _input_basename or "solution"
+    # 去掉文件系统不友好字符
+    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in stem)
+    out_dir = _args.output_dir or "."
+    os.makedirs(out_dir, exist_ok=True)
+    cand = os.path.join(out_dir, f"{safe}_solution.json")
+    i = 2
+    while os.path.exists(cand):
+        cand = os.path.join(out_dir, f"{safe}_solution_{i}.json")
+        i += 1
+    return cand
+_solution_path = _resolve_solution_path()
 
 def print_vars(md):
     prt = md.Proto()
@@ -467,13 +536,28 @@ if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
                     edges.append([[i, j], [i, j+1]])
         sol_belts.append({"type": typ, "frm": frm, "to": to, "edges": edges})
 
-    solution = {"n": n, "m": m, "machs": sol_machs, "belts": sol_belts}
+    solution = {
+        "n": n, "m": m,
+        "machs": sol_machs, "belts": sol_belts,
+        "problem": {k: v for k, v in _problem_meta.items() if v is not None},
+    }
+    # 回写"原始问题"：包括输入文件中的 mach/belt 定义和 _editor 编辑器布局信息
+    # 这样编辑器加载 solution 时可以同时还原原编辑场景（位置 / 备注 / freePorts / belt 端口归属）
+    if _input_data is not None:
+        solution["input"] = {
+            "mach": _input_data.get("mach", []),
+            "belt": _input_data.get("belt", []),
+            "n": _input_data.get("n", n),
+            "m": _input_data.get("m", m),
+        }
+        if "_editor" in _input_data:
+            solution["input"]["_editor"] = _input_data["_editor"]
     try:
-        with open("solution.json", "w", encoding="utf-8") as f:
+        with open(_solution_path, "w", encoding="utf-8") as f:
             json.dump(solution, f, ensure_ascii=False, indent=2)
-        print("Solution exported to solution.json")
+        print(f"Solution exported to {_solution_path}")
     except Exception as e:
-        print(f"Failed to write solution.json: {e}")
+        print(f"Failed to write {_solution_path}: {e}")
     # ---- 结构化输出结束 ----
 
     board = [["." for _ in range(m)] for _ in range(n)]

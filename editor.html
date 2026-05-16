@@ -301,11 +301,12 @@
   <input type="range" id="cell-px" min="10" max="100" value="40" style="width:120px;">
   <span id="cell-px-val" style="font-size:12px; color:#aaa; min-width:32px;">40px</span>
   <span style="flex:1"></span>
-  <button id="btn-export-json">导出 JSON</button>
-  <button id="btn-import-json">导入 JSON</button>
+  <button id="btn-export-aic" class="primary">导出问题 (.aic.json)</button>
+  <button id="btn-import-json">导入问题 (.aic.json)</button>
   <button id="btn-load-example">加载示例</button>
-  <button id="btn-load-solution" style="background:#388e3c;border-color:#388e3c;">加载求解结果</button>
+  <button id="btn-load-solution" style="background:#388e3c;border-color:#388e3c;">导入求解结果 (solution.json)</button>
   <button id="btn-clear-solution" style="display:none;">清除结果</button>
+  <button id="btn-restore-input" style="display:none;background:#5e35b1;border-color:#5e35b1;">恢复原问题到编辑器</button>
   <button id="btn-clear" class="danger">清空</button>
 </header>
 
@@ -373,6 +374,15 @@
 
   <!-- 右：详情 + belt + 代码 -->
   <aside class="panel right">
+    <h2>问题信息</h2>
+    <div class="field-row"><label>名称</label><input type="text" id="prob-name" placeholder="用于命名输出文件"></div>
+    <div class="field-row" style="align-items:flex-start;"><label>描述</label>
+      <textarea id="prob-desc" rows="2" placeholder="选填" style="background:#333;color:#e0e0e0;border:1px solid #555;padding:3px 6px;border-radius:3px;font-size:13px;flex:1;resize:vertical;"></textarea>
+    </div>
+    <div class="field-row" style="align-items:flex-start;"><label>备注</label>
+      <textarea id="prob-note" rows="2" placeholder="选填" style="background:#333;color:#e0e0e0;border:1px solid #555;padding:3px 6px;border-radius:3px;font-size:13px;flex:1;resize:vertical;"></textarea>
+    </div>
+
     <h2>选中机器</h2>
     <div id="detail-panel"><div class="hint">未选中机器</div></div>
 
@@ -380,10 +390,10 @@
     <div class="hint">在画布上方工具栏选 <b>传送带 / 管道</b> 工具，然后点击机器边缘端口建立连接。下方为当前所有连接：</div>
     <div class="belt-list" id="belt-list"></div>
 
-    <h2>生成的 Python 代码</h2>
+    <h2>Python 工厂配置片段</h2>
+    <div class="hint" style="margin-top:-2px;">仅在需要手工粘贴到 main.py 内联数据区时使用；常规流程请用顶部 <b>「导出问题 (.aic.json)」</b></div>
     <div style="display:flex; gap:6px;">
-      <button id="btn-copy-code" style="flex:1">复制</button>
-      <button id="btn-download-py" style="flex:1">下载 .py</button>
+      <button id="btn-copy-code" style="flex:1">复制片段</button>
     </div>
     <div class="code-preview" id="code-preview"></div>
   </aside>
@@ -407,7 +417,11 @@ const STORAGE_KEY = "endfield_aic_editor_v3";
 let state = loadState() || defaultState();
 
 function defaultState() {
-  return { machs: [], belts: [], n: 10, m: 10, cell: 40, selected: -1, tool: "pan" };
+  return {
+    machs: [], belts: [], n: 10, m: 10,
+    cell: 40, selected: -1, tool: "pan",
+    problem: { name: "", description: "", note: "" },
+  };
 }
 function saveState() {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch(e) {}
@@ -419,6 +433,7 @@ function loadState() {
     const obj = JSON.parse(s);
     if (!obj || !Array.isArray(obj.machs)) return null;
     if (typeof obj.cell !== "number") obj.cell = 40;
+    if (!obj.problem) obj.problem = { name: "", description: "", note: "" };
     return obj;
   } catch(e) { return null; }
 }
@@ -657,7 +672,10 @@ function typeColor(t) {
 const PAD = 8; // 每边额外 8 格
 
 function workArea() {
-  return { W: state.n + 2*PAD, H: state.m + 2*PAD, pad: PAD };
+  // 求解结果模式下若 solution 网格比当前 state 大，按更大的撑开 canvas 以免裁切
+  const en = solution ? Math.max(state.n, solution.n) : state.n;
+  const em = solution ? Math.max(state.m, solution.m) : state.m;
+  return { W: en + 2*PAD, H: em + 2*PAD, pad: PAD };
 }
 // 机器存储的 pos 用 "求解区域坐标系"，可以为负 / 越界，表示在求解区域外。
 // 渲染时换算为工作区坐标 = pos + pad
@@ -675,22 +693,32 @@ function renderCanvas() {
   canvas.innerHTML = "";
 
   // 求解目标区域 (n*m 虚线框)
+  // 加载 solution 时优先用 solution 自己的 n/m，避免与当前 state 不一致导致框对不上
+  const sn = solution ? solution.n : state.n;
+  const sm = solution ? solution.m : state.m;
   const solve = document.createElement("div");
   solve.className = "solve-area";
   solve.style.left   = (PAD * cell) + "px";
   solve.style.top    = (PAD * cell) + "px";
-  solve.style.width  = (state.m * cell) + "px";
-  solve.style.height = (state.n * cell) + "px";
+  solve.style.width  = (sm * cell) + "px";
+  solve.style.height = (sn * cell) + "px";
   const lbl = document.createElement("div");
   lbl.className = "solve-area-label";
-  lbl.textContent = `求解区域 ${state.n} × ${state.m}`;
+  const mismatch = solution && (solution.n !== state.n || solution.m !== state.m);
+  lbl.textContent = `求解区域 ${sn} × ${sm}` +
+    (mismatch ? `  (与编辑器 ${state.n}×${state.m} 不一致)` : "");
+  if (mismatch) {
+    lbl.style.background = "#bf360c";
+    lbl.style.borderColor = "#ff6f00";
+    lbl.style.color = "#fff";
+  }
   solve.appendChild(lbl);
   // 求解区域内上边缘高亮 (port 必须放在 x=0 行)
   const topEdge = document.createElement("div");
   topEdge.className = "top-edge";
   topEdge.style.left = "0";
   topEdge.style.top = "-3px";
-  topEdge.style.width = (state.m * cell) + "px";
+  topEdge.style.width = (sm * cell) + "px";
   solve.appendChild(topEdge);
   canvas.appendChild(solve);
 
@@ -1362,6 +1390,11 @@ function renderAll() {
   document.getElementById("grid-m").value = state.m;
   document.getElementById("cell-px").value = state.cell;
   document.getElementById("cell-px-val").textContent = state.cell + "px";
+  // 同步问题信息字段
+  if (!state.problem) state.problem = { name: "", description: "", note: "" };
+  document.getElementById("prob-name").value = state.problem.name || "";
+  document.getElementById("prob-desc").value = state.problem.description || "";
+  document.getElementById("prob-note").value = state.problem.note || "";
   renderCanvas();
   renderDetail();
   renderBeltList();
@@ -1550,21 +1583,130 @@ document.getElementById("canvas-wrap").addEventListener("auxclick", e => {
 document.getElementById("btn-copy-code").onclick = () => {
   navigator.clipboard.writeText(generateCode()).then(() => toast("代码已复制"));
 };
-document.getElementById("btn-download-py").onclick = () => {
-  const blob = new Blob([generateCode()], {type:"text/x-python"});
+
+// 问题信息字段
+document.getElementById("prob-name").oninput = e => {
+  if (!state.problem) state.problem = { name:"", description:"", note:"" };
+  state.problem.name = e.target.value; saveState();
+};
+document.getElementById("prob-desc").oninput = e => {
+  if (!state.problem) state.problem = { name:"", description:"", note:"" };
+  state.problem.description = e.target.value; saveState();
+};
+document.getElementById("prob-note").oninput = e => {
+  if (!state.problem) state.problem = { name:"", description:"", note:"" };
+  state.problem.note = e.target.value; saveState();
+};
+
+// 把一个 .aic.json 对象 (mach/belt/n/m/_editor) 加载为编辑器 state
+function loadAicObject(obj) {
+  const ext = obj._editor;
+  const newMachs = obj.mach.map((m, i) => {
+    const mm = { type: m.type, size: [...m.size] };
+    if (m.dist !== undefined) mm.dist = m.dist;
+    if (ext && ext.machs && ext.machs[i]) {
+      const em = ext.machs[i];
+      mm.pos = Array.isArray(em.pos) ? [...em.pos] : [0, 0];
+      mm.note = em.note || "";
+      const fp = em.freePorts || {};
+      mm.freePorts = {
+        "-2": (fp["-2"] || []).map(a => [...a]),
+        "-1": (fp["-1"] || []).map(a => [...a]),
+        "1":  (fp["1"]  || []).map(a => [...a]),
+        "2":  (fp["2"]  || []).map(a => [...a]),
+      };
+    } else {
+      // 没有 _editor：所有端口均当 freePort（旧文件 / 求解器原始输入兼容）
+      mm.pos = [0, 0];
+      mm.freePorts = { "-2":[], "-1":[], "1":[], "2":[] };
+      for (const k of [-2,-1,1,2]) {
+        const arr = m[String(k)] || m[k] || [];
+        mm.freePorts[k] = arr.map(a => [...a]);
+      }
+    }
+    return mm;
+  });
+  let newBelts = [];
+  if (ext && Array.isArray(ext.belts)) {
+    newBelts = ext.belts.map(b => ({
+      type: b.type, frm: b.frm, to: b.to,
+      frmPort: b.frmPort ? [...b.frmPort] : null,
+      toPort:  b.toPort  ? [...b.toPort]  : null,
+    }));
+  }
+  state = {
+    machs: newMachs, belts: newBelts,
+    n: obj.n || 10, m: obj.m || 10,
+    cell: state.cell || 40, selected: -1, tool: "pan",
+    problem: { name: obj.name||"", description: obj.description||"", note: obj.note||"" },
+  };
+  if (!ext) state.machs.forEach(m => { m.pos = findFreePos(m.size[0], m.size[1]); });
+  saveState(); renderAll();
+}
+
+// 导出 .aic.json (给求解器 main.py 用)
+document.getElementById("btn-export-aic").onclick = () => {
+  // 生成兼容 main.py 的 mach（包含 belts 端口 + freePorts，键用字符串）
+  const portMap = state.machs.map(() => ({ "-2":[], "-1":[], "1":[], "2":[] }));
+  state.belts.forEach(b => {
+    if (b.frmPort && portMap[b.frm]) portMap[b.frm][-b.type].push(b.frmPort);
+    if (b.toPort  && portMap[b.to])  portMap[b.to][ b.type].push(b.toPort);
+  });
+  state.machs.forEach((m, i) => {
+    if (!m.freePorts) return;
+    for (const k of [-2,-1,1,2]) {
+      (m.freePorts[k] || []).forEach(([s, p]) => {
+        const dup = portMap[i][k].some(q => q[0] === s && q[1] === p);
+        if (!dup) portMap[i][k].push([s, p]);
+      });
+    }
+  });
+  const machJson = state.machs.map((m, i) => {
+    const o = { type: m.type, size: [m.size[0], m.size[1]] };
+    if (m.type === "elec") o.dist = m.dist || 5;
+    for (const k of [-2,-1,1,2]) {
+      if (portMap[i][k].length > 0) o[String(k)] = portMap[i][k];
+    }
+    return o;
+  });
+  const beltJson = state.belts.map(b => [b.type, b.frm, b.to]);
+  const prob = state.problem || {};
+  // 编辑器扩展字段：求解器忽略 _editor，编辑器导入时用它精确恢复布局
+  const editorExt = {
+    machs: state.machs.map(m => ({
+      pos: [m.pos[0], m.pos[1]],
+      note: m.note || "",
+      freePorts: m.freePorts ? {
+        "-2": (m.freePorts[-2]||[]).map(p => [...p]),
+        "-1": (m.freePorts[-1]||[]).map(p => [...p]),
+        "1":  (m.freePorts[1] ||[]).map(p => [...p]),
+        "2":  (m.freePorts[2] ||[]).map(p => [...p]),
+      } : { "-2":[], "-1":[], "1":[], "2":[] },
+    })),
+    belts: state.belts.map(b => ({
+      type: b.type, frm: b.frm, to: b.to,
+      frmPort: b.frmPort ? [...b.frmPort] : null,
+      toPort:  b.toPort  ? [...b.toPort]  : null,
+    })),
+  };
+  const aic = {
+    name: prob.name || "",
+    description: prob.description || "",
+    note: prob.note || "",
+    n: state.n, m: state.m,
+    mach: machJson,
+    belt: beltJson,
+    _editor: editorExt,
+  };
+  const safeName = (prob.name || "problem").replace(/[^\w\u4e00-\u9fa5\-.]+/g, "_") || "problem";
+  const blob = new Blob([JSON.stringify(aic, null, 2)], {type:"application/json"});
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = "aic_input.py"; a.click();
+  a.href = url; a.download = `${safeName}.aic.json`; a.click();
   URL.revokeObjectURL(url);
+  toast("已导出 " + a.download);
 };
-document.getElementById("btn-export-json").onclick = () => {
-  const data = JSON.stringify(state, null, 2);
-  const blob = new Blob([data], {type:"application/json"});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = "aic_problem.json"; a.click();
-  URL.revokeObjectURL(url);
-};
+
 document.getElementById("btn-import-json").onclick = () => document.getElementById("file-input").click();
 document.getElementById("file-input").onchange = e => {
   const f = e.target.files[0]; if (!f) return;
@@ -1572,6 +1714,14 @@ document.getElementById("file-input").onchange = e => {
   r.onload = () => {
     try {
       const obj = JSON.parse(r.result);
+      // 检测格式：.aic.json (含 mach 字段) vs 完整 state (含 machs 字段)
+      if (Array.isArray(obj.mach) && Array.isArray(obj.belt)) {
+        const hasExt = !!obj._editor;
+        loadAicObject(obj);
+        toast(hasExt ? "已导入 .aic.json (含编辑器布局)" : "已导入 .aic.json");
+        return;
+      }
+      // 完整 state 格式
       if (!Array.isArray(obj.machs)) throw new Error("invalid");
       obj.machs.forEach(m => {
         ensurePorts(m);
@@ -1582,6 +1732,7 @@ document.getElementById("file-input").onchange = e => {
         machs: obj.machs, belts: obj.belts || [],
         n: obj.n || 10, m: obj.m || 10,
         cell: obj.cell || 40, selected: -1, tool: obj.tool || "pan",
+        problem: obj.problem || { name:"", description:"", note:"" },
       };
       saveState(); renderAll(); toast("导入成功");
     } catch(err) { toast("导入失败：" + err.message); }
@@ -1593,6 +1744,7 @@ document.getElementById("btn-load-example").onclick = () => {
     machs: JSON.parse(JSON.stringify(EXAMPLE.machs)),
     belts: JSON.parse(JSON.stringify(EXAMPLE.belts)),
     n: EXAMPLE.n, m: EXAMPLE.m, cell: state.cell, selected: 0, tool: state.tool,
+    problem: { name: "example_test1", description: "tests.py 中的 test 1 示例", note: "" },
   };
   saveState(); renderAll(); toast("已加载示例");
 };
@@ -1622,9 +1774,21 @@ document.getElementById("file-input-sol").onchange = e => {
       document.getElementById("solution-banner-text").textContent =
         `已加载求解结果：${obj.machs.length} 个机器，${obj.belts.length} 条连接，网格 ${obj.n}×${obj.m} · 点击机器可高亮关联连接`;
       document.getElementById("btn-clear-solution").style.display = "";
-      // 若 solution 的 n/m 跟当前状态不同，提示但不强行覆盖
+      // 仅当 solution 中保留了完整原问题（含 _editor）时显示"恢复"按钮
+      document.getElementById("btn-restore-input").style.display =
+        (obj.input && obj.input._editor) ? "" : "none";
+      // 若 solution 的 n/m 跟当前状态不同，询问是否把编辑器网格调整到一致
       if (obj.n !== state.n || obj.m !== state.m) {
-        toast(`提示：solution 的网格 ${obj.n}×${obj.m} 与当前 ${state.n}×${state.m} 不一致`);
+        const ok = confirm(
+          `求解结果的网格是 ${obj.n}×${obj.m}，与编辑器当前的 ${state.n}×${state.m} 不一致。\n\n` +
+          `是否将编辑器的 n / m 调整为 ${obj.n}×${obj.m}，以便清除结果后继续编辑？\n\n` +
+          `(选"取消"则保留编辑器原网格，结果展示仍按 solution 自己的 ${obj.n}×${obj.m} 显示)`
+        );
+        if (ok) {
+          state.n = obj.n; state.m = obj.m;
+          state.machs.forEach(clipPos);
+          saveState();
+        }
       }
       renderAll();
     } catch(err) { toast("加载失败：" + err.message); }
@@ -1638,6 +1802,7 @@ document.getElementById("btn-clear-solution").onclick = () => {
   document.body.classList.remove("show-solution");
   document.getElementById("solution-banner").style.display = "none";
   document.getElementById("btn-clear-solution").style.display = "none";
+  document.getElementById("btn-restore-input").style.display = "none";
   renderAll();
 };
 
@@ -1652,6 +1817,18 @@ function bindSolToggle(btnId, kind) {
 }
 bindSolToggle("btn-toggle-belt", "belt");
 bindSolToggle("btn-toggle-pipe", "pipe");
+
+// 求解结果模式下：把 solution 中保存的原问题快照恢复到编辑器（含 _editor 布局）
+document.getElementById("btn-restore-input").onclick = () => {
+  if (!solution || !solution.input) {
+    toast("当前求解结果没有保留原问题快照");
+    return;
+  }
+  if (!confirm("将用求解结果中保存的原问题覆盖编辑器当前内容（机器位置/连接/freePorts/备注）。确定继续？")) return;
+  loadAicObject(solution.input);
+  // 保留原 solution 视图（用户可继续切换查看求解结果 vs 原编辑布局）
+  toast("已恢复原问题到编辑器");
+};
 
 // 初始化
 renderPalette();
