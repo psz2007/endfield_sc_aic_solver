@@ -124,8 +124,11 @@
   }
   /* 上边缘标识：port 仅能放第一行 (求解区域内) */
   .top-edge {
-    position: absolute; height: 3px;
-    background: repeating-linear-gradient(90deg, #00897b 0 8px, transparent 8px 12px);
+    /* 求解区域内"底层 x=0 行"的高亮线。视图旋转后落到不同方位（顶/右/底/左）。
+       宽/高 / 朝向由 JS 设置；这里用单色 + 阴影，避免单方向的 stripe pattern 在竖直方向变形。 */
+    position: absolute;
+    background: #00897b;
+    box-shadow: 0 0 4px rgba(0,150,136,0.7);
     pointer-events: none;
   }
 
@@ -189,10 +192,10 @@
 
   /* 求解结果叠加层 */
   body.show-solution .palette-group,
-  body.show-solution #btn-rotate-all,
   body.show-solution #btn-delete-mach,
   body.show-solution .tool-btn[data-tool="belt"],
   body.show-solution .tool-btn[data-tool="pipe"] { opacity: 0.4; pointer-events: none; }
+  /* 注：整体旋转 (#btn-rotate-all) 是纯视觉操作，求解结果模式下也允许使用 */
   .solution-banner {
     background: linear-gradient(90deg, #1b5e20, #388e3c);
     color: #fff; font-size: 12px; padding: 4px 10px;
@@ -330,9 +333,10 @@
     <div class="palette-group" id="palette"></div>
     <h2 style="margin-top:8px;">使用提示</h2>
     <div class="hint">
-      <b>平移工具</b>：拖动机器或空白处平移；点机器选中；选中后<b>点边缘端口圆点循环切换</b>"空闲端口声明"（无 → 管出 → 带出 → 带入 → 管入）。<br>
-      <b>传送带 / 管道工具</b>：点中一个机器边缘的端口圆点开始连接，再点另一个机器的端口完成；自动确定出/入方向。<br>
+      <b>平移工具 (M)</b>：拖动机器或空白处平移；点机器选中；选中后<b>点边缘端口圆点循环切换</b>"空闲端口声明"（无 → 管出 → 带出 → 带入 → 管入）。<br>
+      <b>传送带 (E) / 管道工具 (Q)</b>：点中一个机器边缘的端口圆点开始连接，再点另一个机器的端口完成；自动确定出/入方向。<br>
       <b>右键</b>端口可删除占用它的连接 / 空闲声明；<b>删除连接时，被释放的端口会自动保留为空闲端口声明</b>。<br>
+      <b>WASD</b> 平移画布（Shift 加速）；<b>R</b> 旋转选中机器（无选中则旋转视图，纯视觉，不改底层数据 / 求解器约束）；<b>Esc</b> 取消连接 / 切回平移工具。<br>
       <span style="color:#aaa;">空闲端口（虚线圆边）= 物理上有但未连传送带/管道，会作为求解器候选位置。</span>
     </div>
     <div class="legend">
@@ -346,19 +350,19 @@
   <section class="panel center">
     <div class="toolbar">
       <div class="tool-group" id="tool-group">
-        <button class="tool-btn active" data-tool="pan" title="平移工具 (V)">
+        <button class="tool-btn active" data-tool="pan" title="平移工具 (M)">
           <span class="tool-icon">✥</span> 平移
         </button>
-        <button class="tool-btn" data-tool="belt" title="传送带工具 (B)">
+        <button class="tool-btn" data-tool="belt" title="传送带工具 (E)">
           <span class="tool-icon" style="color:#ff9800;">━</span> 传送带
         </button>
-        <button class="tool-btn" data-tool="pipe" title="管道工具 (P)">
+        <button class="tool-btn" data-tool="pipe" title="管道工具 (Q)">
           <span class="tool-icon" style="color:#2196f3;">═</span> 管道
         </button>
       </div>
       <span class="info" id="cursor-info">拖动机器移动；空白处或中键拖动可平移画布；按 Delete 删除选中</span>
       <button id="btn-center">回到中心</button>
-      <button id="btn-rotate-all" title="把整个画布顺时针旋转 90°">整体旋转</button>
+      <button id="btn-rotate-all" title="顺时针视觉旋转画布 90°（不修改底层数据，导出与求解器约束不受影响）">整体旋转</button>
       <button id="btn-delete-mach" class="danger">删除选中</button>
     </div>
     <div id="solution-banner" class="solution-banner" style="display:none;">
@@ -432,6 +436,7 @@ function defaultState() {
   return {
     machs: [], belts: [], n: 10, m: 10,
     cell: 40, selected: -1, tool: "pan",
+    viewRot: 0, // 视图旋转角度（顺时针 0/1/2/3 × 90°）。仅影响渲染与交互坐标，不改底层数据，导出 .aic.json 时强制按 0 写出。
     problem: { name: "", description: "", note: "" },
   };
 }
@@ -445,6 +450,8 @@ function loadState() {
     const obj = JSON.parse(s);
     if (!obj || !Array.isArray(obj.machs)) return null;
     if (typeof obj.cell !== "number") obj.cell = 40;
+    if (typeof obj.viewRot !== "number") obj.viewRot = 0;
+    obj.viewRot = ((obj.viewRot % 4) + 4) % 4;
     if (!obj.problem) obj.problem = { name: "", description: "", note: "" };
     return obj;
   } catch(e) { return null; }
@@ -491,6 +498,60 @@ const EXAMPLE = {
 };
 
 // ========== 工具函数 ==========
+// ---------- 视图旋转：纯渲染层面的几何变换（底层数据不动） ----------
+// state.viewRot ∈ {0,1,2,3}，每加 1 = 顺时针视觉旋转 90°。
+// 约定：底层 pos[0]=x 是行（屏幕 Y），pos[1]=y 是列（屏幕 X）。
+// 旋转中心是"求解区域 + PAD 工作区"——即 viewN×viewM 的格子矩阵。
+function viewRot() { return ((state.viewRot || 0) % 4 + 4) % 4; }
+function viewN() { return (viewRot() % 2 === 0) ? state.n : state.m; }
+function viewM() { return (viewRot() % 2 === 0) ? state.m : state.n; }
+// solution 也走同样的视图变换；这两个函数取它的"未旋转"行/列。
+function gridN() { return solution ? solution.n : state.n; }
+function gridM() { return solution ? solution.m : state.m; }
+function viewSolveN() { return (viewRot() % 2 === 0) ? gridN() : gridM(); }
+function viewSolveM() { return (viewRot() % 2 === 0) ? gridM() : gridN(); }
+
+// 底层 (x, y, h, w) → 视图 {x, y, h, w}
+// 注意旋转中心是 N×M 的"求解区域"——保证 port (x=0) 旋转后仍贴某条新求解区边沿；
+// 但其它机器可能在 [-PAD, n+PAD] 之外，这没关系，公式同样成立。
+// N/M 默认用 state.n/state.m；求解结果展示模式下应传入 solution.n/solution.m。
+function viewBox(x, y, h, w, N, M) {
+  if (N == null) N = state.n;
+  if (M == null) M = state.m;
+  const r = viewRot();
+  if (r === 0) return { x: x,           y: y,           h: h, w: w };
+  if (r === 1) return { x: y,           y: N - x - h,   h: w, w: h };
+  if (r === 2) return { x: N - x - h,   y: M - y - w,   h: h, w: w };
+  return         { x: M - y - w,   y: x,           h: w, w: h }; // r === 3
+}
+// 底层 side → 视图 side（pos 不变）
+function viewSide(side) { return ((side - viewRot()) % 4 + 4) % 4; }
+// 屏幕拖拽位移 (Δsx, Δsy 像素) → 底层格子位移 {dx, dy}（dx 加在 pos[0]、dy 加在 pos[1]）
+function screenToBaseDelta(dsx, dsy, cell) {
+  const r = viewRot();
+  const sx = Math.round(dsx / cell);
+  const sy = Math.round(dsy / cell);
+  if (r === 0) return { dx:  sy, dy:  sx };
+  if (r === 1) return { dx: -sx, dy:  sy };
+  if (r === 2) return { dx: -sy, dy: -sx };
+  return         { dx:  sx, dy: -sy }; // r === 3
+}
+// 方向键的"屏幕方向"映射回底层位置增量
+function arrowToBaseDelta(arrowKey) {
+  // 屏幕上：Up/Down 改 Y、Left/Right 改 X
+  let dsx = 0, dsy = 0;
+  if (arrowKey === "ArrowUp")    dsy = -1;
+  if (arrowKey === "ArrowDown")  dsy =  1;
+  if (arrowKey === "ArrowLeft")  dsx = -1;
+  if (arrowKey === "ArrowRight") dsx =  1;
+  // 复用 screenToBaseDelta 但参数是格子单位
+  const r = viewRot();
+  if (r === 0) return { dx:  dsy, dy:  dsx };
+  if (r === 1) return { dx: -dsx, dy:  dsy };
+  if (r === 2) return { dx: -dsy, dy: -dsx };
+  return         { dx:  dsx, dy: -dsy };
+}
+
 function ensurePorts(m) {
   // 兼容旧数据：若 mach 本身带 ports，端口信息可能丢失，但新数据无此需求。这里只保证字段存在防 undefined。
   // 不再使用 m.ports；端口完全由 belts 维护。
@@ -581,20 +642,21 @@ function listEdgePositions(idx) {
   return out.filter(p => { const k = p.join(","); if (seen.has(k)) return false; seen.add(k); return true; });
 }
 // 求 mach idx 上 (side, pos) 端口在画布上的像素坐标 (相对 canvas 左上)
+// 视图旋转下，机器位置/尺寸/端口 side 都按 viewBox / viewSide 取视图侧的值。
 function portPixelPos(idx, side, pos) {
   const m = state.machs[idx];
   const [h, w] = m.size;
-  const [mx, my] = m.pos; // 求解区坐标
+  const [mx, my] = m.pos; // 底层求解区坐标
   const cell = state.cell;
-  // 机器在 canvas 中的左上像素
-  const left = (my + PAD) * cell;
-  const top  = (mx + PAD) * cell;
-  // 边相对机器内的格子坐标 → 像素中心
+  const vb = viewBox(mx, my, h, w);
+  const vside = viewSide(side);
+  const left = (vb.y + PAD) * cell;
+  const top  = (vb.x + PAD) * cell;
   let dx, dy;
-  if (side === 0)      { dy = h * cell;         dx = pos * cell + cell/2; }
-  else if (side === 1) { dy = (h-1-pos)*cell + cell/2; dx = w * cell; }
-  else if (side === 2) { dy = 0;                dx = (w-1-pos) * cell + cell/2; }
-  else /* 3 */         { dy = pos*cell + cell/2; dx = 0; }
+  if (vside === 0)      { dy = vb.h * cell;            dx = pos * cell + cell/2; }
+  else if (vside === 1) { dy = (vb.h-1-pos)*cell + cell/2; dx = vb.w * cell; }
+  else if (vside === 2) { dy = 0;                      dx = (vb.w-1-pos) * cell + cell/2; }
+  else /* 3 */          { dy = pos*cell + cell/2;      dx = 0; }
   return [left + dx, top + dy];
 }
 // 在工作区中找一个不与已有机器重叠的位置
@@ -692,7 +754,11 @@ function workArea() {
   // 求解结果模式下若 solution 网格比当前 state 大，按更大的撑开 canvas 以免裁切
   const en = solution ? Math.max(state.n, solution.n) : state.n;
   const em = solution ? Math.max(state.m, solution.m) : state.m;
-  return { W: en + 2*PAD, H: em + 2*PAD, pad: PAD };
+  // W = 屏幕水平方向（列数 + 2*PAD）；H = 屏幕竖直方向（行数 + 2*PAD）
+  // 视图旋转 90°/270° 时行列互换。
+  const widthCells  = (viewRot() % 2 === 0) ? em : en;
+  const heightCells = (viewRot() % 2 === 0) ? en : em;
+  return { W: widthCells + 2*PAD, H: heightCells + 2*PAD, pad: PAD };
 }
 // 机器存储的 pos 用 "求解区域坐标系"，可以为负 / 越界，表示在求解区域外。
 // 渲染时换算为工作区坐标 = pos + pad
@@ -711,8 +777,9 @@ function renderCanvas() {
 
   // 求解目标区域 (n*m 虚线框)
   // 加载 solution 时优先用 solution 自己的 n/m，避免与当前 state 不一致导致框对不上
-  const sn = solution ? solution.n : state.n;
-  const sm = solution ? solution.m : state.m;
+  // 视图旋转下行列互换，求解区视觉宽 = 视图列数 × cell
+  const sn = viewSolveN();
+  const sm = viewSolveM();
   const solve = document.createElement("div");
   solve.className = "solve-area";
   solve.style.left   = (PAD * cell) + "px";
@@ -721,21 +788,37 @@ function renderCanvas() {
   solve.style.height = (sn * cell) + "px";
   const lbl = document.createElement("div");
   lbl.className = "solve-area-label";
+  // 标签里仍显示底层逻辑的 n×m，避免视图旋转改变报告值
+  const baseSn = solution ? solution.n : state.n;
+  const baseSm = solution ? solution.m : state.m;
   const mismatch = solution && (solution.n !== state.n || solution.m !== state.m);
-  lbl.textContent = `求解区域 ${sn} × ${sm}` +
-    (mismatch ? `  (与编辑器 ${state.n}×${state.m} 不一致)` : "");
+  lbl.textContent = `求解区域 ${baseSn} × ${baseSm}` +
+    (mismatch ? `  (与编辑器 ${state.n}×${state.m} 不一致)` : "") +
+    (viewRot() ? `  · 视图旋转 ${viewRot()*90}°` : "");
   if (mismatch) {
     lbl.style.background = "#bf360c";
     lbl.style.borderColor = "#ff6f00";
     lbl.style.color = "#fff";
   }
   solve.appendChild(lbl);
-  // 求解区域内上边缘高亮 (port 必须放在 x=0 行)
+  // 求解区域内"x=0 行"高亮（port 必须放在底层第 0 行）。视图旋转后这条边对应不同方位。
   const topEdge = document.createElement("div");
   topEdge.className = "top-edge";
-  topEdge.style.left = "0";
-  topEdge.style.top = "-3px";
-  topEdge.style.width = (sm * cell) + "px";
+  // 底层 x=0 行旋转后位于：r=0 顶边、r=1 右边、r=2 底边、r=3 左边
+  const r = viewRot();
+  if (r === 0) {
+    topEdge.style.left = "0"; topEdge.style.top = "-3px";
+    topEdge.style.width = (sm * cell) + "px"; topEdge.style.height = "3px";
+  } else if (r === 1) {
+    topEdge.style.left = (sm * cell) + "px"; topEdge.style.top = "0";
+    topEdge.style.width = "3px"; topEdge.style.height = (sn * cell) + "px";
+  } else if (r === 2) {
+    topEdge.style.left = "0"; topEdge.style.top = (sn * cell) + "px";
+    topEdge.style.width = (sm * cell) + "px"; topEdge.style.height = "3px";
+  } else {
+    topEdge.style.left = "-3px"; topEdge.style.top = "0";
+    topEdge.style.width = "3px"; topEdge.style.height = (sn * cell) + "px";
+  }
   solve.appendChild(topEdge);
   canvas.appendChild(solve);
 
@@ -750,12 +833,14 @@ function renderCanvas() {
     if (m.type === "elec") {
       const [x,y] = m.pos; const [h,w] = m.size;
       const d = m.dist || 5;
+      // 把"扩展后的矩形"经视图变换到屏幕
+      const vb = viewBox(x - d, y - d, h + 2*d, w + 2*d);
       const aura = document.createElement("div");
       aura.className = "elec-aura";
-      aura.style.left   = ((y - d + PAD) * cell) + "px";
-      aura.style.top    = ((x - d + PAD) * cell) + "px";
-      aura.style.width  = ((w + 2*d) * cell) + "px";
-      aura.style.height = ((h + 2*d) * cell) + "px";
+      aura.style.left   = ((vb.y + PAD) * cell) + "px";
+      aura.style.top    = ((vb.x + PAD) * cell) + "px";
+      aura.style.width  = (vb.w * cell) + "px";
+      aura.style.height = (vb.h * cell) + "px";
       canvas.appendChild(aura);
     }
   });
@@ -763,13 +848,14 @@ function renderCanvas() {
   // 机器
   state.machs.forEach((m, idx) => {
     const [x,y] = m.pos; const [h,w] = m.size;
+    const vb = viewBox(x, y, h, w);
     const box = document.createElement("div");
     const inSolve = (x >= 0 && y >= 0 && x + h <= state.n && y + w <= state.m);
     box.className = `mach-box t-${m.type}` + (idx === state.selected ? " selected" : "") + (inSolve ? "" : " outside");
-    box.style.left   = ((y + PAD) * cell) + "px";
-    box.style.top    = ((x + PAD) * cell) + "px";
-    box.style.width  = (w * cell) + "px";
-    box.style.height = (h * cell) + "px";
+    box.style.left   = ((vb.y + PAD) * cell) + "px";
+    box.style.top    = ((vb.x + PAD) * cell) + "px";
+    box.style.width  = (vb.w * cell) + "px";
+    box.style.height = (vb.h * cell) + "px";
     box.dataset.idx = idx;
     box.innerHTML = `
       <div class="id-num">${idx}</div>
@@ -797,18 +883,20 @@ let solShow = { belt: true, pipe: true };
 
 function renderSolutionOverlay(canvas) {
   const cell = state.cell;
+  const solN = solution.n, solM = solution.m;
 
-  // 机器（用 sol 的 pos 与 occ_h/occ_w 渲染矩形）
+  // 机器（用 sol 的 pos 与 occ_h/occ_w 渲染矩形，套视图变换）
   solution.machs.forEach(sm => {
     const [x, y] = sm.pos;
     const h = sm.occ_h ?? sm.size[0];
     const w = sm.occ_w ?? sm.size[1];
+    const vb = viewBox(x, y, h, w, solN, solM);
     const box = document.createElement("div");
     box.className = `sol-mach t-${sm.type}` + (sm.id === solSelected ? " sol-selected" : "");
-    box.style.left   = ((y + PAD) * cell) + "px";
-    box.style.top    = ((x + PAD) * cell) + "px";
-    box.style.width  = (w * cell) + "px";
-    box.style.height = (h * cell) + "px";
+    box.style.left   = ((vb.y + PAD) * cell) + "px";
+    box.style.top    = ((vb.x + PAD) * cell) + "px";
+    box.style.width  = (vb.w * cell) + "px";
+    box.style.height = (vb.h * cell) + "px";
     const rotInfo = `${sm.rot * 90}°${sm.p ? "·镜像" : ""}`;
     box.innerHTML = `<div>#${sm.id}</div><div class="meta">${sm.type} ${rotInfo}</div>`;
     box.style.cursor = "pointer";
@@ -818,27 +906,27 @@ function renderSolutionOverlay(canvas) {
       solSelected = (solSelected === sm.id) ? -1 : sm.id;
       renderAll();
     });
-    // 端口圆点：复用编辑器的 .port-btn 样式，定位到机器矩形内对应外边缘格子
-    // dir : 0=下 1=右 2=上 3=左 (机器外法向)
+    // 端口圆点：先把 (cell[0], cell[1]) 经 viewBox 变换到视图格子坐标，再相对 box 内部定位。
     if (sm.ports) {
       sm.ports.forEach(po => {
         const isPipe = Math.abs(po.kind) === 2;
         if (!isPipe && !solShow.belt) return;
         if (isPipe && !solShow.pipe) return;
 
-        // 端口在机器矩形内的格子偏移
-        const ci = po.cell[0] - x;
-        const cj = po.cell[1] - y;
+        // 视图下 1×1 端口格子位置：把端口所在的单格子 (po.cell) 经 viewBox 变换
+        const pcVb = viewBox(po.cell[0], po.cell[1], 1, 1, solN, solM);
+        const ci = pcVb.x - vb.x;     // 端口格在 box 内部的视图行偏移
+        const cj = pcVb.y - vb.y;     // 端口格在 box 内部的视图列偏移
         const half = 7;
-        // 该格中心
         const gcx = cj * cell + cell / 2;
         const gcy = ci * cell + cell / 2;
-        // 沿 dir 偏到格子外边缘
+        // 视图 dir
+        const vdir = ((po.dir - viewRot()) % 4 + 4) % 4;
         let left = gcx, top = gcy;
-        if (po.dir === 0)      { top  = (ci + 1) * cell; }
-        else if (po.dir === 1) { left = (cj + 1) * cell; }
-        else if (po.dir === 2) { top  = ci * cell; }
-        else /* 3 */            { left = cj * cell; }
+        if (vdir === 0)      { top  = (ci + 1) * cell; }
+        else if (vdir === 1) { left = (cj + 1) * cell; }
+        else if (vdir === 2) { top  = ci * cell; }
+        else /* 3 */         { left = cj * cell; }
 
         const btn = document.createElement("button");
         const beltType = isPipe ? 2 : 1;
@@ -846,10 +934,10 @@ function renderSolutionOverlay(canvas) {
         btn.className = `port-btn used-${role}-${beltType}`;
         btn.style.left = (left - half) + "px";
         btn.style.top  = (top  - half) + "px";
-        // 白色三角箭头：出口朝外 (沿 dir)，入口朝内 (反 dir)
-        const outArrow = ["▼", "▶", "▲", "◀"]; // 朝外: side/dir -> 字符
+        // 白色三角箭头：出口朝外 (沿 vdir)，入口朝内 (反 vdir)
+        const outArrow = ["▼", "▶", "▲", "◀"];
         const inArrow  = ["▲", "◀", "▼", "▶"];
-        btn.textContent = (po.kind < 0 ? outArrow[po.dir] : inArrow[po.dir]);
+        btn.textContent = (po.kind < 0 ? outArrow[vdir] : inArrow[vdir]);
         const labelMap = { "-2":"管道出口", "-1":"传送带出口", "1":"传送带入口", "2":"管道入口" };
         btn.title = `机器 #${sm.id} · ${labelMap[po.kind]}`;
         // 非关联机器时压低视觉强度
@@ -867,7 +955,7 @@ function renderSolutionOverlay(canvas) {
     canvas.appendChild(box);
   });
 
-  // belts (折线把 edges 串连)
+  // belts (折线把 edges 串连，每个端点经 viewBox 变换)
   const svgNS = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(svgNS, "svg");
   svg.setAttribute("class", "sol-svg");
@@ -880,11 +968,14 @@ function renderSolutionOverlay(canvas) {
     const isRelated = (solSelected >= 0 && (sb.frm === solSelected || sb.to === solSelected));
     sb.edges.forEach(([a, b]) => {
       const [ax, ay] = a, [bx, by] = b;
+      // 把每个 1×1 单格中心经 viewBox 变换
+      const va = viewBox(ax, ay, 1, 1, solN, solM);
+      const vb = viewBox(bx, by, 1, 1, solN, solM);
       const line = document.createElementNS(svgNS, "line");
-      line.setAttribute("x1", (ay + PAD + 0.5) * cell);
-      line.setAttribute("y1", (ax + PAD + 0.5) * cell);
-      line.setAttribute("x2", (by + PAD + 0.5) * cell);
-      line.setAttribute("y2", (bx + PAD + 0.5) * cell);
+      line.setAttribute("x1", (va.y + PAD + 0.5) * cell);
+      line.setAttribute("y1", (va.x + PAD + 0.5) * cell);
+      line.setAttribute("x2", (vb.y + PAD + 0.5) * cell);
+      line.setAttribute("y2", (vb.x + PAD + 0.5) * cell);
       line.setAttribute("class", `sol-edge t-${sb.type}` + (isRelated ? " sol-edge-hl" : ""));
       line.setAttribute("stroke-width", Math.max(3, cell * 0.18));
       svg.appendChild(line);
@@ -951,8 +1042,8 @@ function renderBeltLines(canvas) {
     //       未选中任何机器时 → 所有连接均淡化 (dim)
     const cls = `belt-line t-${b.type} ` + (state.selected >= 0 && isRelated ? "hl" : "dim");
 
-    // 正交布线：从端口先沿其法向延伸一小段，再转向到目标
-    const d = routeOrtho(x1, y1, b.frmPort[0], x2, y2, b.toPort[0], cell);
+    // 正交布线：从端口先沿其法向延伸一小段，再转向到目标。视图旋转下用 viewSide。
+    const d = routeOrtho(x1, y1, viewSide(b.frmPort[0]), x2, y2, viewSide(b.toPort[0]), cell);
     const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
     path.setAttribute("d", d);
     path.setAttribute("class", cls);
@@ -977,6 +1068,9 @@ function renderBeltLines(canvas) {
 function addPortButtons(box, idx, cell) {
   const m = state.machs[idx];
   const [h, w] = m.size;
+  // 视图下机器尺寸（h/w 可能因为视图旋转互换）
+  const vh = (viewRot() % 2 === 0) ? h : w;
+  const vw = (viewRot() % 2 === 0) ? w : h;
   const usedMap = portsOfMach(idx);
   const half = 7;
   // 显示策略：
@@ -985,10 +1079,21 @@ function addPortButtons(box, idx, cell) {
   //    若机器被选中，则显示所有边缘端口（让用户可点亮新位置）
   const showAll = (state.tool !== "pan") || (state.selected === idx);
 
-  const place = (side, pos, left, top) => {
+  // 渲染时：以视图 side / pos 决定按钮在 box 内的位置；事件 callback 用底层 (side, pos) 不变。
+  const place = (side, pos) => {
     const key = `${side},${pos}`;
     const used = usedMap.get(key);
     if (!showAll && !used) return;
+    const vside = viewSide(side);
+    // 视图中按钮的中心相对 box 左上的偏移（按视图侧 + 视图机器尺寸 vh × vw 计算）
+    let dx, dy;
+    if (vside === 0)      { dy = vh * cell;            dx = pos * cell + cell/2; }
+    else if (vside === 1) { dy = (vh-1-pos)*cell + cell/2; dx = vw * cell; }
+    else if (vside === 2) { dy = 0;                    dx = (vw-1-pos) * cell + cell/2; }
+    else /* 3 */          { dy = pos*cell + cell/2;    dx = 0; }
+    const left = dx - half;
+    const top  = dy - half;
+
     const btn = document.createElement("button");
     let cls = "port-btn";
     if (used) {
@@ -1010,10 +1115,10 @@ function addPortButtons(box, idx, cell) {
             ? ` (空闲声明: ${labelMap[used.kind]})`
             : ` (${used.role === "from" ? "出" : "入"} · belt ${used.beltIdx})`)
         : " (未使用)");
-    // 三角朝向：出口指向机器外侧，入口指向机器内侧
+    // 三角朝向：出口指向机器外侧，入口指向机器内侧。视图旋转下用 vside 决定屏幕方向。
     const outArrow = ["▼", "▶", "▲", "◀"];
     const inArrow  = ["▲", "◀", "▼", "▶"];
-    btn.textContent = used ? (used.role === "from" ? outArrow[side] : inArrow[side]) : "";
+    btn.textContent = used ? (used.role === "from" ? outArrow[vside] : inArrow[vside]) : "";
     btn.addEventListener("mousedown", e => { e.stopPropagation(); e.preventDefault(); });
     btn.addEventListener("click", e => { e.stopPropagation(); onPortClick(idx, side, pos); });
     btn.addEventListener("contextmenu", e => {
@@ -1024,13 +1129,14 @@ function addPortButtons(box, idx, cell) {
     box.appendChild(btn);
   };
 
+  // 仍按底层 (side, pos) 枚举 —— 数据空间无变化
   for (let j = 0; j < w; j++) {
-    place(0, j,     j*cell + cell/2 - half, h*cell - half);     // 下
-    place(2, w-1-j, j*cell + cell/2 - half, -half);             // 上
+    place(0, j);            // 底层"下"边
+    place(2, w-1-j);        // 底层"上"边
   }
   for (let i = 0; i < h; i++) {
-    place(1, h-1-i, w*cell - half,         i*cell + cell/2 - half); // 右
-    place(3, i,     -half,                 i*cell + cell/2 - half); // 左
+    place(1, h-1-i);        // 底层"右"边
+    place(3, i);            // 底层"左"边
   }
 }
 
@@ -1187,16 +1293,16 @@ function startDrag(e, idx) {
 function onDrag(e) {
   if (!drag) return;
   const cell = state.cell;
-  const dx = Math.round((e.clientY - drag.startY) / cell);
-  const dy = Math.round((e.clientX - drag.startX) / cell);
-  if (dx === 0 && dy === 0 && !drag.moved) return;
+  // 屏幕拖拽位移先经视图旋转逆变换为底层位移
+  const baseDelta = screenToBaseDelta(e.clientX - drag.startX, e.clientY - drag.startY, cell);
+  if (baseDelta.dx === 0 && baseDelta.dy === 0 && !drag.moved) return;
   drag.moved = true;
   const m = state.machs[drag.idx];
   const [h, w] = m.size;
   const wa = workArea();
   // 仅受工作区边界限制 (n*m 不再限制 — 让用户自由摆放)
-  const newX = Math.max(-wa.pad, Math.min(state.n + wa.pad - h, drag.origPos[0] + dx));
-  const newY = Math.max(-wa.pad, Math.min(state.m + wa.pad - w, drag.origPos[1] + dy));
+  const newX = Math.max(-PAD, Math.min(state.n + PAD - h, drag.origPos[0] + baseDelta.dx));
+  const newY = Math.max(-PAD, Math.min(state.m + PAD - w, drag.origPos[1] + baseDelta.dy));
   if (m.pos[0] !== newX || m.pos[1] !== newY) {
     m.pos = [newX, newY];
     renderCanvas();
@@ -1559,33 +1665,14 @@ function rotateMachine(idx) {
   clipPos(m); saveState(); renderAll();
 }
 
-// 整体顺时针旋转 90°：网格 (n,m) → (m,n)；
-// 每个机器左上角 (x,y, h×w) → (y, n - x - h, w×h)；端口同步 rotPortCW。
+// 整体顺时针视觉旋转 90°：只改 state.viewRot，不动底层 machs / belts / n / m。
+// 这样导出 .aic.json / 求解结果完全不受视图旋转影响（port 的 x=0 约束等保持有效）。
 function rotateAllCW() {
-  const oldN = state.n;
-  state.machs.forEach(m => {
-    const [x, y] = m.pos;
-    const [h, w] = m.size;
-    m.pos = [y, oldN - x - h];
-    m.size = [w, h];
-    if (m.freePorts) {
-      const newFree = { "-2":[], "-1":[], "1":[], "2":[] };
-      for (const k of [-2,-1,1,2]) {
-        (m.freePorts[k] || []).forEach(([s, p]) => {
-          newFree[k].push(rotPortCW(s, p));
-        });
-      }
-      m.freePorts = newFree;
-    }
-  });
-  state.belts.forEach(b => {
-    if (b.frmPort) b.frmPort = rotPortCW(b.frmPort[0], b.frmPort[1]);
-    if (b.toPort)  b.toPort  = rotPortCW(b.toPort[0],  b.toPort[1]);
-  });
-  // 网格尺寸交换
-  [state.n, state.m] = [state.m, state.n];
+  state.viewRot = (((state.viewRot || 0) + 1) % 4 + 4) % 4;
   saveState(); renderAll();
-  toast(`整体顺时针旋转 90°，网格 ${state.n}×${state.m}`);
+  toast(state.viewRot === 0
+    ? `视图已恢复 0°（底层网格 ${state.n}×${state.m}）`
+    : `视图旋转 ${state.viewRot * 90}°（底层网格 ${state.n}×${state.m} 不变）`);
 }
 
 // 机器内部右上角"⟳"按钮：事件委托
@@ -1608,28 +1695,69 @@ document.getElementById("btn-delete-mach").onclick = () => {
 };
 
 document.addEventListener("keydown", e => {
-  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  // 在文本输入控件里不拦截
+  const tag = e.target && e.target.tagName;
+  if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+  if (e.target && e.target.isContentEditable) return;
+
+  // 删除选中机器
   if ((e.key === "Delete" || e.key === "Backspace") && state.selected >= 0) {
+    e.preventDefault();
     deleteMach(state.selected);
+    return;
   }
+
+  // Esc：先取消进行中的连接；非平移工具则切回平移；最后才取消选中
   if (e.key === "Escape") {
-    if (connectFrom) { connectFrom = null; renderAll(); return; }
-    state.selected = -1; renderAll();
+    let handled = false;
+    if (connectFrom) { connectFrom = null; handled = true; }
+    if (state.tool !== "pan") { setTool("pan"); handled = true; }
+    if (!handled) state.selected = -1;
+    renderAll();
+    return;
   }
-  // 工具切换快捷键
-  if (e.key === "v" || e.key === "V") setTool("pan");
-  if (e.key === "b" || e.key === "B") setTool("belt");
-  if (e.key === "p" || e.key === "P") setTool("pipe");
-  // 方向键微调
+
+  // 工具切换（用 e.code 不受 capslock / 输入法影响；带修饰键不响应避免误触）
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.code === "KeyM") { setTool("pan");  e.preventDefault(); return; }
+  if (e.code === "KeyE") { setTool("belt"); e.preventDefault(); return; }
+  if (e.code === "KeyQ") { setTool("pipe"); e.preventDefault(); return; }
+
+  // R：选中机器时旋转机器，否则整体旋转画布
+  if (e.code === "KeyR") {
+    if (state.selected >= 0) rotateMachine(state.selected);
+    else rotateAllCW();
+    e.preventDefault();
+    return;
+  }
+
+  // WASD：平移画布（任何工具下都可用，按 Shift 加速）
+  if (e.code === "KeyW" || e.code === "KeyA" || e.code === "KeyS" || e.code === "KeyD") {
+    const wrap = document.getElementById("canvas-wrap");
+    const step = (e.shiftKey ? 4 : 1) * state.cell;
+    if (e.code === "KeyW") wrap.scrollTop  -= step;
+    if (e.code === "KeyS") wrap.scrollTop  += step;
+    if (e.code === "KeyA") wrap.scrollLeft -= step;
+    if (e.code === "KeyD") wrap.scrollLeft += step;
+    e.preventDefault();
+    return;
+  }
+
+  // 方向键：微调选中机器位置（按"屏幕方向"，再经视图旋转逆变换为底层位移）
   if (state.selected >= 0) {
     const m = state.machs[state.selected];
-    let moved = false;
-    const wa = workArea();
-    if (e.key === "ArrowUp")    { m.pos[0] = Math.max(-wa.pad, m.pos[0]-1); moved=true; }
-    if (e.key === "ArrowDown")  { m.pos[0] = Math.min(state.n + wa.pad - m.size[0], m.pos[0]+1); moved=true; }
-    if (e.key === "ArrowLeft")  { m.pos[1] = Math.max(-wa.pad, m.pos[1]-1); moved=true; }
-    if (e.key === "ArrowRight") { m.pos[1] = Math.min(state.m + wa.pad - m.size[1], m.pos[1]+1); moved=true; }
-    if (moved) { e.preventDefault(); saveState(); renderAll(); }
+    const [h, w] = m.size;
+    const isArrow = (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight");
+    if (isArrow) {
+      const baseDelta = arrowToBaseDelta(e.key);
+      const newX = Math.max(-PAD, Math.min(state.n + PAD - h, m.pos[0] + baseDelta.dx));
+      const newY = Math.max(-PAD, Math.min(state.m + PAD - w, m.pos[1] + baseDelta.dy));
+      if (newX !== m.pos[0] || newY !== m.pos[1]) {
+        m.pos = [newX, newY];
+        e.preventDefault();
+        saveState(); renderAll();
+      }
+    }
   }
 });
 
@@ -1949,9 +2077,11 @@ function centerCanvas() {
   const wRect = wrap.getBoundingClientRect();
   const offX = cRect.left - wRect.left + wrap.scrollLeft;
   const offY = cRect.top  - wRect.top  + wrap.scrollTop;
-  // 求解区域在 canvas 内的中心
-  const solveCenterX = (PAD + state.m / 2) * cell;
-  const solveCenterY = (PAD + state.n / 2) * cell;
+  // 求解区域在 canvas 内的中心（视图旋转下行列视图互换）
+  const vsm = viewSolveM(); // 视图列数 = 屏幕水平方向格子数
+  const vsn = viewSolveN(); // 视图行数 = 屏幕竖直方向格子数
+  const solveCenterX = (PAD + vsm / 2) * cell;
+  const solveCenterY = (PAD + vsn / 2) * cell;
   wrap.scrollLeft = Math.max(0, offX + solveCenterX - wrap.clientWidth / 2);
   wrap.scrollTop  = Math.max(0, offY + solveCenterY - wrap.clientHeight / 2);
 }
