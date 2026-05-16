@@ -1700,7 +1700,9 @@ document.getElementById("canvas").addEventListener("click", e => {
   else if (act === "dup") duplicateMachine(idx);
 });
 
-// 复制机器：深拷贝 type / size / dist / note / freePorts，不带任何 belt 连接，
+// 复制机器：深拷贝 type / size / dist / note / freePorts，不带任何 belt 连接。
+// 原机器**已被 belt 占用**的端口在新机器上以"空闲端口声明"形式保留（kind 与 belt 类型对应），
+// 这样新机器的端口分布跟原机器在视觉上一致，只是没有具体连线 —— 用户随时可重新连。
 // 新机器位置由 findFreePos 决定（避开已有机器，求解区中心附近优先）。
 function duplicateMachine(idx) {
   const src = state.machs[idx];
@@ -1711,6 +1713,21 @@ function duplicateMachine(idx) {
       fp[k] = (src.freePorts[k] || []).map(arr => [...arr]);
     }
   }
+  // 把原机器在 belt 中占用的端口（不在 src.freePorts 里）按连接所用 kind 也补进新机器的 freePorts。
+  // 与 removeBelt 还原 freePort 的规则保持一致：frm 端 kind = -belt.type, to 端 kind = +belt.type。
+  const seen = new Set();         // "side,pos" 防同位置重复
+  for (const k of [-2,-1,1,2]) fp[k].forEach(([s,p]) => seen.add(`${s},${p}`));
+  state.belts.forEach(b => {
+    const ends = [];
+    if (b.frm === idx && b.frmPort) ends.push({ port: b.frmPort, kind: -b.type });
+    if (b.to  === idx && b.toPort)  ends.push({ port: b.toPort,  kind:  b.type });
+    for (const { port, kind } of ends) {
+      const key = `${port[0]},${port[1]}`;
+      if (seen.has(key)) continue;
+      fp[kind].push([port[0], port[1]]);
+      seen.add(key);
+    }
+  });
   const copy = {
     type: src.type,
     size: [...src.size],
@@ -1722,7 +1739,7 @@ function duplicateMachine(idx) {
   state.machs.push(copy);
   state.selected = state.machs.length - 1;
   saveState(); renderAll();
-  toast(`已复制机器 #${idx} → #${state.selected}（不含连接）`);
+  toast(`已复制机器 #${idx} → #${state.selected}（端口声明保留，连接未复制）`);
 }
 
 document.getElementById("btn-delete-mach").onclick = () => {
