@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-@author: psz2007 (Entelecheia#2049)
-@coauthor: vortexer99 (kokobird)
+@author: psz2007 (Entelecheia#2049，主程序逻辑设计实现)
+@coauthor: vortexer99 (可视化网页前端及主程序配置可视化接口)
 """
 
 # environment constants
@@ -161,9 +161,11 @@ md.add_no_overlap_2d(x_intv, y_intv)
 # make facilities not overlap
 mp = {}
 bmp = {}
+bmp2 = {}
 for i in range(n):
     for j in range(m):
         tmp = []
+        tmp2 = []
         for k, ma in enumerate(mach_var):
             cur = md.new_bool_var(f"occ_{i}_{j}_{k}")
             b1 = md.new_bool_var(f"occ_{i}_{j}_{k}_1")
@@ -186,11 +188,16 @@ for i in range(n):
             md.add(cur == 0).only_enforce_if(b.Not())
             md.add(cur > 0).only_enforce_if(b)
             tmp.append(cur)
+            if mach[k]["type"] != "port" and (mach[k]["type"] != "logi" or 2 in mach[k]):
+                tmp2.append(cur)
 
         bmp[(i, j)] = md.new_bool_var(f"bmp_{i}_{j}")
         md.add_bool_or(tmp).only_enforce_if(bmp[(i, j)])
         md.add_bool_and([t.Not() for t in tmp]).only_enforce_if(bmp[(i, j)].Not())
         md.add_at_most_one(tmp)
+        bmp2[(i, j)] = md.new_bool_var(f"bmp2_{i}_{j}")
+        md.add_bool_or(tmp2).only_enforce_if(bmp2[(i, j)])
+        md.add_bool_and([t.Not() for t in tmp2]).only_enforce_if(bmp2[(i, j)].Not())
 
 dir = [[1, 0], [0, 1], [-1, 0], [0, -1]]
 
@@ -356,15 +363,16 @@ for id in range(len(belt)):
                 md.add(cur[gid(i, j, k)] == True).only_enforce_if(port_rot)
                 is_port.append(port_rot)
 
+            occ = [None, bmp[(i, j)], bmp2[(i, j)]][typ]
             tmp1 = md.new_bool_var(f"belt_{id}_{i}_{j}_tmp1")
             tmp2 = md.new_bool_var(f"belt_{id}_{i}_{j}_tmp2")
             tmp3 = md.new_bool_var(f"belt_{id}_{i}_{j}_tmp3")
             md.add_bool_or(is_port).only_enforce_if(tmp1)
             md.add_bool_and([a.Not() for a in is_port]).only_enforce_if(tmp1.Not())
-            md.add_bool_and([tmp1.Not(), bmp[(i, j)]]).only_enforce_if(tmp2)
-            md.add_bool_or([tmp1, bmp[(i, j)].Not()]).only_enforce_if(tmp2.Not())
-            md.add_bool_and([tmp1.Not(), bmp[(i, j)].Not()]).only_enforce_if(tmp3)
-            md.add_bool_or([tmp1, bmp[(i, j)]]).only_enforce_if(tmp3.Not())
+            md.add_bool_and([tmp1.Not(), occ]).only_enforce_if(tmp2)
+            md.add_bool_or([tmp1, occ.Not()]).only_enforce_if(tmp2.Not())
+            md.add_bool_and([tmp1.Not(), occ.Not()]).only_enforce_if(tmp3)
+            md.add_bool_or([tmp1, occ]).only_enforce_if(tmp3.Not())
             md.add(s == 1).only_enforce_if(tmp1)
             md.add(s == 0).only_enforce_if(tmp2)
             md.add_linear_expression_in_domain(s, cp_model.Domain.from_values([0, 2])).only_enforce_if(tmp3)
@@ -401,6 +409,7 @@ for i in range(n-1):
 for i in range(1, n-1):
     for j in range(1, m-1):
         md.add(deg[1][i*m+j] == 0).only_enforce_if(intx[2][i*m+j])
+        md.add(bmp[(i, j)] == False).only_enforce_if(intx[2][i*m+j])
 
 if _optimal:
     md.minimize(sum(deg[typ][i * m + j] for typ in [1, 2] for i in range(n) for j in range(m)))
@@ -511,13 +520,12 @@ if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         else:
             for i in range(n):
                 for j in range(m):
-                    if board[i][j] == '.':
-                        flg = sum([solver.value(belt_var[k][gid(i, j, d)] if gid(i, j, d) != -1 and belt[k][0] == typ else 0) * 2 ** d
-                                for k in range(len(belt)) for d in range(4)])
-                        chr = {0: '.', 3: '┏', 5: '┃', 6: '┗', 9: '┓', 10: '━', 12: '┛', 15: '╋'}.get(flg, '?')
-                        print(chr, end='')
-                    else:
-                        print(board[i][j], end='')
+                    flg = sum([solver.value(belt_var[k][gid(i, j, d)] if gid(i, j, d) != -1 and belt[k][0] == typ else 0) * 2 ** d
+                            for k in range(len(belt)) for d in range(4)])
+                    chr = {0: '.', 3: '┏', 5: '┃', 6: '┗', 9: '┓', 10: '━', 12: '┛', 15: '╋'}.get(flg, '?')
+                    if chr == '.' or chr == '?':
+                        chr = board[i][j]
+                    print(chr, end='')
                 print()
             print()
     print()
