@@ -79,6 +79,75 @@ n = 10
 m = 10
 # === facility & belt data ENDS HERE ===
 
+# ===== 命令行参数：可用 --input 覆盖上面的内联默认数据 =====
+import argparse, os, json, sys
+_parser = argparse.ArgumentParser(
+    description="终末地小型工厂摆放求解器。可使用 --input 指定 .aic.json 输入文件；不传则使用本文件内默认数据。",
+    formatter_class=argparse.RawDescriptionHelpFormatter,
+)
+_parser.add_argument("--input", "-i", default=None,
+    help="输入 .aic.json 文件路径（含 mach / belt / n / m，可附 name / description / note）")
+_parser.add_argument("--output-dir", "-o", default=".",
+    help="solution.json 的输出目录（默认当前目录）")
+_parser.add_argument("--name", default=None,
+    help="问题名称，用于命名输出文件；默认取输入文件 name 字段或文件名")
+_args, _ = _parser.parse_known_args()
+
+# 问题元数据（用于回写到 solution.json 并参与文件命名）
+_problem_meta = {"name": None, "description": None, "note": None}
+_input_basename = None   # 输入文件名（不含扩展），用作默认 name 的回退
+_input_data = None       # 输入文件的原始 JSON (供 solution 回写编辑器布局信息)
+
+if _args.input:
+    if not os.path.isfile(_args.input):
+        print(f"Input file not found: {_args.input}", file=sys.stderr)
+        sys.exit(2)
+    with open(_args.input, "r", encoding="utf-8") as _f:
+        _data = json.load(_f)
+    _input_data = _data
+    for _k in ("mach", "belt", "n", "m"):
+        if _k not in _data:
+            print(f"Input file missing required field: {_k}", file=sys.stderr)
+            sys.exit(2)
+    # JSON 中 mach[i] 的端口键是字符串 "-2"/"-1"/"1"/"2"，转回 int
+    def _normalize_mach(item):
+        out = {}
+        for k, v in item.items():
+            if isinstance(k, str) and k.lstrip("-").isdigit():
+                out[int(k)] = v
+            else:
+                out[k] = v
+        return out
+    mach = [_normalize_mach(it) for it in _data["mach"]]
+    belt = _data["belt"]
+    n = int(_data["n"])
+    m = int(_data["m"])
+    for _k in ("name", "description", "note"):
+        if _k in _data: _problem_meta[_k] = _data[_k]
+    _input_basename = os.path.splitext(os.path.basename(_args.input))[0]
+    print(f"Loaded input: {_args.input}")
+    if _problem_meta["name"]:
+        print(f"Problem name: {_problem_meta['name']}")
+
+# 命令行 --name 优先级最高
+if _args.name:
+    _problem_meta["name"] = _args.name
+
+# 生成最终的 solution 输出文件路径（重名递增 _2 _3 ...）
+def _resolve_solution_path():
+    stem = _problem_meta["name"] or _input_basename or "solution"
+    # 去掉文件系统不友好字符
+    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in stem)
+    out_dir = _args.output_dir or "."
+    os.makedirs(out_dir, exist_ok=True)
+    cand = os.path.join(out_dir, f"{safe}_solution.json")
+    i = 2
+    while os.path.exists(cand):
+        cand = os.path.join(out_dir, f"{safe}_solution_{i}.json")
+        i += 1
+    return cand
+_solution_path = _resolve_solution_path()
+
 def print_vars(md):
     prt = md.Proto()
     print(f"Variables count: {len(prt.variables)}")
@@ -427,14 +496,12 @@ if _debug_on:
     solver.parameters.log_to_stdout = False
     solver.parameters.log_subsolver_statistics = True
     solver.log_callback = print
-status = solver.Solve(md)
 
-# print results
-if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-    print("OK")
-
-    # ---- 导出结构化求解结果到 solution.json (供可视化编辑器使用) ----
-    import json
+# ---- 组装 / 落盘 solution.json 的工具函数 ----
+# 抽出来，使最终 solver 完成时与中途回调（_optimal=True 时每次找到改进解）共用同一份代码。
+# value_fn 接收一个 IntVar / BoolVar 返回其当前赋值；solver.value 与 callback.value 都满足该签名。
+import json as _json
+def _build_and_write_solution(value_fn, label=""):
     sol_machs = []
     for id, t in enumerate(mach_var):
         tx, ty, tr, tp, _h, _w = t
@@ -442,47 +509,90 @@ if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             "id": id,
             "type": mach[id]["type"],
             "size": list(mach[id]["size"]),
-            "pos": [solver.value(tx), solver.value(ty)],   # 求解后的左上角格子 (行, 列)
-            "rot": solver.value(tr),                        # 0/1/2/3 旋转 90° 的次数
-            "p":   bool(solver.value(tp)),                  # 是否做了镜像 (h、w 互换)
-            "occ_h": solver.value(_h),                      # 实际占用 h
-            "occ_w": solver.value(_w),                      # 实际占用 w
+            "pos": [value_fn(tx), value_fn(ty)],
+            "rot": value_fn(tr),
+            "p":   bool(value_fn(tp)),
+            "occ_h": value_fn(_h),
+            "occ_w": value_fn(_w),
             **({"dist": mach[id]["dist"]} if mach[id]["type"] == "elec" else {}),
         })
-        # 端口实际位置（按求解器规则，参见 main.py 顶部 port[] 字典）
         sol_ports = []
         for d in [-2, -1, 1, 2]:
             if d in mach[id]:
                 for pid, _ in enumerate(mach[id][d]):
                     px, py, pd = port[(id, d, pid)]
                     sol_ports.append({
-                        "kind": d,                          # -2/-1/1/2
-                        "orig": list(mach[id][d][pid]),     # 输入定义的 [side, pos]
-                        "cell": [solver.value(px), solver.value(py)],  # 端口所在格子 (行,列)
-                        "dir":  solver.value(pd),           # 旋转后端口朝向 0/1/2/3
+                        "kind": d,
+                        "orig": list(mach[id][d][pid]),
+                        "cell": [value_fn(px), value_fn(py)],
+                        "dir":  value_fn(pd),
                     })
         sol_machs[-1]["ports"] = sol_ports
 
-    # 提取每条 belt 的实际占用边
     sol_belts = []
     for bi, (typ, frm, to) in enumerate(belt):
-        edges = []  # 每条边记成 (cell_a, cell_b)，cell = [行, 列]
+        edges = []
         for i in range(n):
             for j in range(m):
-                # d=0: 向下到 (i+1, j) ; d=1: 向右到 (i, j+1)
-                if i < n-1 and gid(i, j, 0) != -1 and solver.value(belt_var[bi][gid(i, j, 0)]):
+                if i < n-1 and gid(i, j, 0) != -1 and value_fn(belt_var[bi][gid(i, j, 0)]):
                     edges.append([[i, j], [i+1, j]])
-                if j < m-1 and gid(i, j, 1) != -1 and solver.value(belt_var[bi][gid(i, j, 1)]):
+                if j < m-1 and gid(i, j, 1) != -1 and value_fn(belt_var[bi][gid(i, j, 1)]):
                     edges.append([[i, j], [i, j+1]])
         sol_belts.append({"type": typ, "frm": frm, "to": to, "edges": edges})
 
-    solution = {"n": n, "m": m, "machs": sol_machs, "belts": sol_belts}
+    out = {
+        "n": n, "m": m,
+        "machs": sol_machs, "belts": sol_belts,
+        "problem": {k: v for k, v in _problem_meta.items() if v is not None},
+    }
+    if _input_data is not None:
+        out["input"] = {
+            "mach": _input_data.get("mach", []),
+            "belt": _input_data.get("belt", []),
+            "n": _input_data.get("n", n),
+            "m": _input_data.get("m", m),
+        }
+        if "_editor" in _input_data:
+            out["input"]["_editor"] = _input_data["_editor"]
     try:
-        with open("solution.json", "w", encoding="utf-8") as f:
-            json.dump(solution, f, ensure_ascii=False, indent=2)
-        print("Solution exported to solution.json")
+        with open(_solution_path, "w", encoding="utf-8") as f:
+            _json.dump(out, f, ensure_ascii=False, indent=2)
+        print(f"Solution exported to {_solution_path}{(' (' + label + ')') if label else ''}")
     except Exception as e:
-        print(f"Failed to write solution.json: {e}")
+        print(f"Failed to write {_solution_path}: {e}")
+    return out
+
+
+# 优化模式下，每找到一个更优可行解就立刻把它写到磁盘。
+# 这样即使后续被 max_time 截断 / 用户 Ctrl+C，磁盘上保留的是当前已知最优解。
+class _IncrementalSolutionWriter(cp_model.CpSolverSolutionCallback):
+    def __init__(self):
+        super().__init__()
+        self._n = 0
+    def on_solution_callback(self):
+        self._n += 1
+        try:
+            obj = self.objective_value
+        except Exception:
+            obj = None
+        label = f"intermediate #{self._n}" + (f", obj={obj}" if obj is not None else "")
+        try:
+            _build_and_write_solution(self.value, label=label)
+        except Exception as e:
+            print(f"[solution callback] write failed: {e}")
+
+if _optimal:
+    status = solver.solve(md, _IncrementalSolutionWriter())
+else:
+    status = solver.solve(md)
+
+# print results
+if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+    print("OK" + (" (OPTIMAL)" if status == cp_model.OPTIMAL else " (FEASIBLE - may not be optimal)"))
+
+    # 终态写盘：保证文件中是 solver 最终选定的解（覆盖回调期间的最后一次 intermediate 写入；
+    # 在 _optimal=False 时这是第一次写入）。
+    _build_and_write_solution(solver.value, label="final")
     # ---- 结构化输出结束 ----
 
     board = [["." for _ in range(m)] for _ in range(n)]

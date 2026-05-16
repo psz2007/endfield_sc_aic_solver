@@ -124,8 +124,11 @@
   }
   /* 上边缘标识：port 仅能放第一行 (求解区域内) */
   .top-edge {
-    position: absolute; height: 3px;
-    background: repeating-linear-gradient(90deg, #00897b 0 8px, transparent 8px 12px);
+    /* 求解区域内"底层 x=0 行"的高亮线。视图旋转后落到不同方位（顶/右/底/左）。
+       宽/高 / 朝向由 JS 设置；这里用单色 + 阴影，避免单方向的 stripe pattern 在竖直方向变形。 */
+    position: absolute;
+    background: #00897b;
+    box-shadow: 0 0 4px rgba(0,150,136,0.7);
     pointer-events: none;
   }
 
@@ -153,6 +156,27 @@
     background: rgba(0,0,0,0.35); white-space: nowrap; overflow: hidden;
     text-overflow: ellipsis; line-height: 1.2;
   }
+  /* 机器内部右上角动作按钮（旋转 / 复制）：仅选中机器显示 */
+  .mach-box .act-btn {
+    position: absolute; top: 2px;
+    width: 18px; height: 18px; padding: 0;
+    display: none; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.55);
+    border-radius: 3px;
+    font-size: 13px; line-height: 1; cursor: pointer;
+    z-index: 11;
+  }
+  .mach-box .act-btn[data-act="rot"] {
+    right: 2px;
+    color: #ffeb3b; border: 1px solid #ffeb3b;
+  }
+  .mach-box .act-btn[data-act="rot"]:hover { background: #ffeb3b; color: #000; }
+  .mach-box .act-btn[data-act="dup"] {
+    right: 22px;
+    color: #80cbc4; border: 1px solid #4db6ac;
+  }
+  .mach-box .act-btn[data-act="dup"]:hover { background: #4db6ac; color: #000; }
+  .mach-box.selected .act-btn { display: flex; }
 
   /* 电桩覆盖范围 */
   .elec-aura {
@@ -175,17 +199,38 @@
   /* 临时连接线（拖动中） */
   .belt-temp { stroke: #fff; stroke-dasharray: 4 3; opacity: 0.8; }
 
-  /* 求解结果叠加层 */
-  body.show-solution .palette-group,
-  body.show-solution #btn-rotate-mach,
-  body.show-solution #btn-delete-mach,
-  body.show-solution .tool-btn[data-tool="belt"],
-  body.show-solution .tool-btn[data-tool="pipe"] { opacity: 0.4; pointer-events: none; }
-  .solution-banner {
+  /* 预览模式（导入 JSON 后只读查看，不允许编辑） */
+  body.preview-mode .palette-group,
+  body.preview-mode #btn-delete-mach,
+  body.preview-mode .tool-btn[data-tool="belt"],
+  body.preview-mode .tool-btn[data-tool="pipe"] { opacity: 0.4; pointer-events: none; }
+  /* 注：整体旋转 (#btn-rotate-all) 是纯视觉操作，预览模式下也允许使用 */
+  .preview-banner {
+    display: flex; align-items: center; gap: 6px;
     background: linear-gradient(90deg, #1b5e20, #388e3c);
     color: #fff; font-size: 12px; padding: 4px 10px;
     border-bottom: 1px solid #4caf50;
   }
+  .preview-banner.mode-design {
+    background: linear-gradient(90deg, #283593, #3949ab);
+    border-bottom-color: #5c6bc0;
+  }
+  /* segmented control（原始设计 / 求解结果 切换） */
+  .segmented {
+    display: inline-flex; margin-left: 14px; border: 1px solid rgba(255,255,255,0.5); border-radius: 4px; overflow: hidden;
+  }
+  .segmented .seg-btn {
+    background: transparent; color: #fff; border: none;
+    padding: 2px 10px; cursor: pointer; font-size: 12px;
+    border-right: 1px solid rgba(255,255,255,0.35);
+  }
+  .segmented .seg-btn:last-child { border-right: none; }
+  .segmented .seg-btn:hover { background: rgba(255,255,255,0.10); }
+  .segmented .seg-btn.active { background: rgba(255,255,255,0.25); font-weight: bold; }
+  .segmented .seg-btn[disabled] {
+    opacity: 0.35; cursor: not-allowed;
+  }
+  .segmented .seg-btn[disabled]:hover { background: transparent; }
   .sol-toggle {
     background: rgba(0,0,0,0.35); color: #fff; border: 1px solid #4caf50;
     padding: 2px 8px; border-radius: 3px; cursor: pointer; font-size: 12px;
@@ -301,11 +346,9 @@
   <input type="range" id="cell-px" min="10" max="100" value="40" style="width:120px;">
   <span id="cell-px-val" style="font-size:12px; color:#aaa; min-width:32px;">40px</span>
   <span style="flex:1"></span>
-  <button id="btn-export-json">导出 JSON</button>
-  <button id="btn-import-json">导入 JSON</button>
+  <button id="btn-export-aic" class="primary">导出问题 (.aic.json)</button>
+  <button id="btn-import-json">导入 JSON…</button>
   <button id="btn-load-example">加载示例</button>
-  <button id="btn-load-solution" style="background:#388e3c;border-color:#388e3c;">加载求解结果</button>
-  <button id="btn-clear-solution" style="display:none;">清除结果</button>
   <button id="btn-clear" class="danger">清空</button>
 </header>
 
@@ -317,9 +360,11 @@
     <div class="palette-group" id="palette"></div>
     <h2 style="margin-top:8px;">使用提示</h2>
     <div class="hint">
-      <b>平移工具</b>：拖动机器或空白处平移；点机器选中；选中后<b>点边缘端口圆点循环切换</b>"空闲端口声明"（无 → 管出 → 带出 → 带入 → 管入）。<br>
-      <b>传送带 / 管道工具</b>：点中一个机器边缘的端口圆点开始连接，再点另一个机器的端口完成；自动确定出/入方向。<br>
-      <b>右键</b>端口可删除占用它的连接 / 空闲声明。<br>
+      <b>平移工具 (M)</b>：拖动机器或空白处平移；点机器选中；选中后<b>点边缘端口圆点循环切换</b>"空闲端口声明"（无 → 管出 → 带出 → 带入 → 管入）。<br>
+      <b>传送带 (E) / 管道工具 (Q)</b>：点中一个机器边缘的端口圆点开始连接，再点另一个机器的端口完成；自动确定出/入方向。<br>
+      <b>右键</b>端口可删除占用它的连接 / 空闲声明；<b>删除连接时，被释放的端口会自动保留为空闲端口声明</b>。<br>
+      <b>WASD</b> 平移画布（Shift 加速）；<b>R</b> 旋转选中机器（无选中则旋转视图，纯视觉，不改底层数据 / 求解器约束）；<b>Esc</b> 取消连接 / 切回平移工具。<br>
+      <b>导入 JSON…</b>：会自动识别 .aic.json / solution.json 进入预览，可在顶部切换查看原始设计 / 求解结果，并按需<b>保存到编辑器</b>。<br>
       <span style="color:#aaa;">空闲端口（虚线圆边）= 物理上有但未连传送带/管道，会作为求解器候选位置。</span>
     </div>
     <div class="legend">
@@ -333,29 +378,30 @@
   <section class="panel center">
     <div class="toolbar">
       <div class="tool-group" id="tool-group">
-        <button class="tool-btn active" data-tool="pan" title="平移工具 (V)">
+        <button class="tool-btn active" data-tool="pan" title="平移工具 (M)">
           <span class="tool-icon">✥</span> 平移
         </button>
-        <button class="tool-btn" data-tool="belt" title="传送带工具 (B)">
+        <button class="tool-btn" data-tool="belt" title="传送带工具 (E)">
           <span class="tool-icon" style="color:#ff9800;">━</span> 传送带
         </button>
-        <button class="tool-btn" data-tool="pipe" title="管道工具 (P)">
+        <button class="tool-btn" data-tool="pipe" title="管道工具 (Q)">
           <span class="tool-icon" style="color:#2196f3;">═</span> 管道
         </button>
       </div>
       <span class="info" id="cursor-info">拖动机器移动；空白处或中键拖动可平移画布；按 Delete 删除选中</span>
       <button id="btn-center">回到中心</button>
-      <button id="btn-rotate-mach">旋转(p切换)</button>
+      <button id="btn-rotate-all" title="顺时针视觉旋转画布 90°（不修改底层数据，导出与求解器约束不受影响）">整体旋转</button>
       <button id="btn-delete-mach" class="danger">删除选中</button>
     </div>
-    <div id="solution-banner" class="solution-banner" style="display:none;">
-      <span id="solution-banner-text"></span>
-      <span style="margin-left:14px;">
-        <span style="color:#ff9800;">●</span> 传送带
-        <span style="color:#1e88e5; margin-left:8px;">●</span> 管道
-        <span style="margin-left:8px; opacity:0.85;">圆点中白三角朝外=出口，朝内=入口</span>
+    <!-- 预览模式工具栏（导入 .aic.json 或 solution.json 后显示，只读预览） -->
+    <div id="preview-banner" class="preview-banner" style="display:none;">
+      <span id="preview-banner-text" style="flex-shrink:0;"></span>
+      <span class="segmented" role="tablist" aria-label="预览模式切换">
+        <button id="btn-view-design" class="seg-btn" data-view="design" title="查看 JSON 中的原始问题描述">原始设计</button>
+        <button id="btn-view-solution" class="seg-btn" data-view="solution" title="查看 JSON 中的求解结果">求解结果</button>
       </span>
-      <span style="margin-left:14px;">
+      <span style="flex:1;"></span>
+      <span id="preview-belt-toggles">
         <button id="btn-toggle-belt" class="sol-toggle active" data-kind="belt">
           <span style="color:#ff9800;">━</span> 传送带
         </button>
@@ -363,6 +409,8 @@
           <span style="color:#1e88e5;">┅</span> 管道
         </button>
       </span>
+      <button id="btn-save-to-editor" class="primary" style="margin-left:10px;" title="把当前视图中的数据保存到编辑器（覆盖当前编辑内容）">保存到编辑器</button>
+      <button id="btn-exit-preview" class="danger" title="退出预览，丢弃这份 JSON，回到编辑器">返回编辑器</button>
     </div>
     <div class="canvas-wrap" id="canvas-wrap">
       <div class="canvas-inner">
@@ -373,6 +421,15 @@
 
   <!-- 右：详情 + belt + 代码 -->
   <aside class="panel right">
+    <h2>问题信息</h2>
+    <div class="field-row"><label>名称</label><input type="text" id="prob-name" placeholder="用于命名输出文件"></div>
+    <div class="field-row" style="align-items:flex-start;"><label>描述</label>
+      <textarea id="prob-desc" rows="2" placeholder="选填" style="background:#333;color:#e0e0e0;border:1px solid #555;padding:3px 6px;border-radius:3px;font-size:13px;flex:1;resize:vertical;"></textarea>
+    </div>
+    <div class="field-row" style="align-items:flex-start;"><label>备注</label>
+      <textarea id="prob-note" rows="2" placeholder="选填" style="background:#333;color:#e0e0e0;border:1px solid #555;padding:3px 6px;border-radius:3px;font-size:13px;flex:1;resize:vertical;"></textarea>
+    </div>
+
     <h2>选中机器</h2>
     <div id="detail-panel"><div class="hint">未选中机器</div></div>
 
@@ -380,17 +437,16 @@
     <div class="hint">在画布上方工具栏选 <b>传送带 / 管道</b> 工具，然后点击机器边缘端口建立连接。下方为当前所有连接：</div>
     <div class="belt-list" id="belt-list"></div>
 
-    <h2>生成的 Python 代码</h2>
+    <h2>Python 工厂配置片段</h2>
+    <div class="hint" style="margin-top:-2px;">仅在需要手工粘贴到 main.py 内联数据区时使用；常规流程请用顶部 <b>「导出问题 (.aic.json)」</b></div>
     <div style="display:flex; gap:6px;">
-      <button id="btn-copy-code" style="flex:1">复制</button>
-      <button id="btn-download-py" style="flex:1">下载 .py</button>
+      <button id="btn-copy-code" style="flex:1">复制片段</button>
     </div>
     <div class="code-preview" id="code-preview"></div>
   </aside>
 </main>
 
 <input type="file" id="file-input" accept=".json" style="display:none;">
-<input type="file" id="file-input-sol" accept=".json" style="display:none;">
 <div class="toast" id="toast"></div>
 
 <script>
@@ -407,9 +463,16 @@ const STORAGE_KEY = "endfield_aic_editor_v3";
 let state = loadState() || defaultState();
 
 function defaultState() {
-  return { machs: [], belts: [], n: 10, m: 10, cell: 40, selected: -1, tool: "pan" };
+  return {
+    machs: [], belts: [], n: 10, m: 10,
+    cell: 40, selected: -1, tool: "pan",
+    viewRot: 0, // 视图旋转角度（顺时针 0/1/2/3 × 90°）。仅影响渲染与交互坐标，不改底层数据，导出 .aic.json 时强制按 0 写出。
+    problem: { name: "", description: "", note: "" },
+  };
 }
 function saveState() {
+  // 预览模式下不写入 localStorage：临时 state 只在内存，退出预览即丢弃
+  if (typeof preview !== "undefined" && preview !== null) return;
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch(e) {}
 }
 function loadState() {
@@ -419,6 +482,9 @@ function loadState() {
     const obj = JSON.parse(s);
     if (!obj || !Array.isArray(obj.machs)) return null;
     if (typeof obj.cell !== "number") obj.cell = 40;
+    if (typeof obj.viewRot !== "number") obj.viewRot = 0;
+    obj.viewRot = ((obj.viewRot % 4) + 4) % 4;
+    if (!obj.problem) obj.problem = { name: "", description: "", note: "" };
     return obj;
   } catch(e) { return null; }
 }
@@ -464,6 +530,60 @@ const EXAMPLE = {
 };
 
 // ========== 工具函数 ==========
+// ---------- 视图旋转：纯渲染层面的几何变换（底层数据不动） ----------
+// state.viewRot ∈ {0,1,2,3}，每加 1 = 顺时针视觉旋转 90°。
+// 约定：底层 pos[0]=x 是行（屏幕 Y），pos[1]=y 是列（屏幕 X）。
+// 旋转中心是"求解区域 + PAD 工作区"——即 viewN×viewM 的格子矩阵。
+function viewRot() { return ((state.viewRot || 0) % 4 + 4) % 4; }
+function viewN() { return (viewRot() % 2 === 0) ? state.n : state.m; }
+function viewM() { return (viewRot() % 2 === 0) ? state.m : state.n; }
+// solution 也走同样的视图变换；这两个函数取它的"未旋转"行/列。
+function gridN() { return solution ? solution.n : state.n; }
+function gridM() { return solution ? solution.m : state.m; }
+function viewSolveN() { return (viewRot() % 2 === 0) ? gridN() : gridM(); }
+function viewSolveM() { return (viewRot() % 2 === 0) ? gridM() : gridN(); }
+
+// 底层 (x, y, h, w) → 视图 {x, y, h, w}
+// 注意旋转中心是 N×M 的"求解区域"——保证 port (x=0) 旋转后仍贴某条新求解区边沿；
+// 但其它机器可能在 [-PAD, n+PAD] 之外，这没关系，公式同样成立。
+// N/M 默认用 state.n/state.m；求解结果展示模式下应传入 solution.n/solution.m。
+function viewBox(x, y, h, w, N, M) {
+  if (N == null) N = state.n;
+  if (M == null) M = state.m;
+  const r = viewRot();
+  if (r === 0) return { x: x,           y: y,           h: h, w: w };
+  if (r === 1) return { x: y,           y: N - x - h,   h: w, w: h };
+  if (r === 2) return { x: N - x - h,   y: M - y - w,   h: h, w: w };
+  return         { x: M - y - w,   y: x,           h: w, w: h }; // r === 3
+}
+// 底层 side → 视图 side（pos 不变）
+function viewSide(side) { return ((side - viewRot()) % 4 + 4) % 4; }
+// 屏幕拖拽位移 (Δsx, Δsy 像素) → 底层格子位移 {dx, dy}（dx 加在 pos[0]、dy 加在 pos[1]）
+function screenToBaseDelta(dsx, dsy, cell) {
+  const r = viewRot();
+  const sx = Math.round(dsx / cell);
+  const sy = Math.round(dsy / cell);
+  if (r === 0) return { dx:  sy, dy:  sx };
+  if (r === 1) return { dx: -sx, dy:  sy };
+  if (r === 2) return { dx: -sy, dy: -sx };
+  return         { dx:  sx, dy: -sy }; // r === 3
+}
+// 方向键的"屏幕方向"映射回底层位置增量
+function arrowToBaseDelta(arrowKey) {
+  // 屏幕上：Up/Down 改 Y、Left/Right 改 X
+  let dsx = 0, dsy = 0;
+  if (arrowKey === "ArrowUp")    dsy = -1;
+  if (arrowKey === "ArrowDown")  dsy =  1;
+  if (arrowKey === "ArrowLeft")  dsx = -1;
+  if (arrowKey === "ArrowRight") dsx =  1;
+  // 复用 screenToBaseDelta 但参数是格子单位
+  const r = viewRot();
+  if (r === 0) return { dx:  dsy, dy:  dsx };
+  if (r === 1) return { dx: -dsx, dy:  dsy };
+  if (r === 2) return { dx: -dsy, dy: -dsx };
+  return         { dx:  dsx, dy: -dsy };
+}
+
 function ensurePorts(m) {
   // 兼容旧数据：若 mach 本身带 ports，端口信息可能丢失，但新数据无此需求。这里只保证字段存在防 undefined。
   // 不再使用 m.ports；端口完全由 belts 维护。
@@ -554,20 +674,21 @@ function listEdgePositions(idx) {
   return out.filter(p => { const k = p.join(","); if (seen.has(k)) return false; seen.add(k); return true; });
 }
 // 求 mach idx 上 (side, pos) 端口在画布上的像素坐标 (相对 canvas 左上)
+// 视图旋转下，机器位置/尺寸/端口 side 都按 viewBox / viewSide 取视图侧的值。
 function portPixelPos(idx, side, pos) {
   const m = state.machs[idx];
   const [h, w] = m.size;
-  const [mx, my] = m.pos; // 求解区坐标
+  const [mx, my] = m.pos; // 底层求解区坐标
   const cell = state.cell;
-  // 机器在 canvas 中的左上像素
-  const left = (my + PAD) * cell;
-  const top  = (mx + PAD) * cell;
-  // 边相对机器内的格子坐标 → 像素中心
+  const vb = viewBox(mx, my, h, w);
+  const vside = viewSide(side);
+  const left = (vb.y + PAD) * cell;
+  const top  = (vb.x + PAD) * cell;
   let dx, dy;
-  if (side === 0)      { dy = h * cell;         dx = pos * cell + cell/2; }
-  else if (side === 1) { dy = (h-1-pos)*cell + cell/2; dx = w * cell; }
-  else if (side === 2) { dy = 0;                dx = (w-1-pos) * cell + cell/2; }
-  else /* 3 */         { dy = pos*cell + cell/2; dx = 0; }
+  if (vside === 0)      { dy = vb.h * cell;            dx = pos * cell + cell/2; }
+  else if (vside === 1) { dy = (vb.h-1-pos)*cell + cell/2; dx = vb.w * cell; }
+  else if (vside === 2) { dy = 0;                      dx = (vb.w-1-pos) * cell + cell/2; }
+  else /* 3 */          { dy = pos*cell + cell/2;      dx = 0; }
   return [left + dx, top + dy];
 }
 // 在工作区中找一个不与已有机器重叠的位置
@@ -613,6 +734,11 @@ function addMachFromPalette(p) {
 }
 
 function deleteMach(idx) {
+  // 删除机器前：把每条受影响 belt 的"另一端"还原为空闲端口声明（保留端口类型）；
+  // 被删除机器自己这一端无处可还原，跳过。
+  state.belts.forEach(b => {
+    if (b.frm === idx || b.to === idx) restoreFreePortsOfBelt(b, idx);
+  });
   state.machs.splice(idx, 1);
   state.belts = state.belts.filter(b => b.frm !== idx && b.to !== idx);
   state.belts.forEach(b => {
@@ -657,7 +783,14 @@ function typeColor(t) {
 const PAD = 8; // 每边额外 8 格
 
 function workArea() {
-  return { W: state.n + 2*PAD, H: state.m + 2*PAD, pad: PAD };
+  // 求解结果模式下若 solution 网格比当前 state 大，按更大的撑开 canvas 以免裁切
+  const en = solution ? Math.max(state.n, solution.n) : state.n;
+  const em = solution ? Math.max(state.m, solution.m) : state.m;
+  // W = 屏幕水平方向（列数 + 2*PAD）；H = 屏幕竖直方向（行数 + 2*PAD）
+  // 视图旋转 90°/270° 时行列互换。
+  const widthCells  = (viewRot() % 2 === 0) ? em : en;
+  const heightCells = (viewRot() % 2 === 0) ? en : em;
+  return { W: widthCells + 2*PAD, H: heightCells + 2*PAD, pad: PAD };
 }
 // 机器存储的 pos 用 "求解区域坐标系"，可以为负 / 越界，表示在求解区域外。
 // 渲染时换算为工作区坐标 = pos + pad
@@ -675,22 +808,49 @@ function renderCanvas() {
   canvas.innerHTML = "";
 
   // 求解目标区域 (n*m 虚线框)
+  // 加载 solution 时优先用 solution 自己的 n/m，避免与当前 state 不一致导致框对不上
+  // 视图旋转下行列互换，求解区视觉宽 = 视图列数 × cell
+  const sn = viewSolveN();
+  const sm = viewSolveM();
   const solve = document.createElement("div");
   solve.className = "solve-area";
   solve.style.left   = (PAD * cell) + "px";
   solve.style.top    = (PAD * cell) + "px";
-  solve.style.width  = (state.m * cell) + "px";
-  solve.style.height = (state.n * cell) + "px";
+  solve.style.width  = (sm * cell) + "px";
+  solve.style.height = (sn * cell) + "px";
   const lbl = document.createElement("div");
   lbl.className = "solve-area-label";
-  lbl.textContent = `求解区域 ${state.n} × ${state.m}`;
+  // 标签里仍显示底层逻辑的 n×m，避免视图旋转改变报告值
+  const baseSn = solution ? solution.n : state.n;
+  const baseSm = solution ? solution.m : state.m;
+  const mismatch = solution && (solution.n !== state.n || solution.m !== state.m);
+  lbl.textContent = `求解区域 ${baseSn} × ${baseSm}` +
+    (mismatch ? `  (与编辑器 ${state.n}×${state.m} 不一致)` : "") +
+    (viewRot() ? `  · 视图旋转 ${viewRot()*90}°` : "");
+  if (mismatch) {
+    lbl.style.background = "#bf360c";
+    lbl.style.borderColor = "#ff6f00";
+    lbl.style.color = "#fff";
+  }
   solve.appendChild(lbl);
-  // 求解区域内上边缘高亮 (port 必须放在 x=0 行)
+  // 求解区域内"x=0 行"高亮（port 必须放在底层第 0 行）。视图旋转后这条边对应不同方位。
   const topEdge = document.createElement("div");
   topEdge.className = "top-edge";
-  topEdge.style.left = "0";
-  topEdge.style.top = "-3px";
-  topEdge.style.width = (state.m * cell) + "px";
+  // 底层 x=0 行旋转后位于：r=0 顶边、r=1 右边、r=2 底边、r=3 左边
+  const r = viewRot();
+  if (r === 0) {
+    topEdge.style.left = "0"; topEdge.style.top = "-3px";
+    topEdge.style.width = (sm * cell) + "px"; topEdge.style.height = "3px";
+  } else if (r === 1) {
+    topEdge.style.left = (sm * cell) + "px"; topEdge.style.top = "0";
+    topEdge.style.width = "3px"; topEdge.style.height = (sn * cell) + "px";
+  } else if (r === 2) {
+    topEdge.style.left = "0"; topEdge.style.top = (sn * cell) + "px";
+    topEdge.style.width = (sm * cell) + "px"; topEdge.style.height = "3px";
+  } else {
+    topEdge.style.left = "-3px"; topEdge.style.top = "0";
+    topEdge.style.width = "3px"; topEdge.style.height = (sn * cell) + "px";
+  }
   solve.appendChild(topEdge);
   canvas.appendChild(solve);
 
@@ -705,12 +865,14 @@ function renderCanvas() {
     if (m.type === "elec") {
       const [x,y] = m.pos; const [h,w] = m.size;
       const d = m.dist || 5;
+      // 把"扩展后的矩形"经视图变换到屏幕
+      const vb = viewBox(x - d, y - d, h + 2*d, w + 2*d);
       const aura = document.createElement("div");
       aura.className = "elec-aura";
-      aura.style.left   = ((y - d + PAD) * cell) + "px";
-      aura.style.top    = ((x - d + PAD) * cell) + "px";
-      aura.style.width  = ((w + 2*d) * cell) + "px";
-      aura.style.height = ((h + 2*d) * cell) + "px";
+      aura.style.left   = ((vb.y + PAD) * cell) + "px";
+      aura.style.top    = ((vb.x + PAD) * cell) + "px";
+      aura.style.width  = (vb.w * cell) + "px";
+      aura.style.height = (vb.h * cell) + "px";
       canvas.appendChild(aura);
     }
   });
@@ -718,18 +880,21 @@ function renderCanvas() {
   // 机器
   state.machs.forEach((m, idx) => {
     const [x,y] = m.pos; const [h,w] = m.size;
+    const vb = viewBox(x, y, h, w);
     const box = document.createElement("div");
     const inSolve = (x >= 0 && y >= 0 && x + h <= state.n && y + w <= state.m);
     box.className = `mach-box t-${m.type}` + (idx === state.selected ? " selected" : "") + (inSolve ? "" : " outside");
-    box.style.left   = ((y + PAD) * cell) + "px";
-    box.style.top    = ((x + PAD) * cell) + "px";
-    box.style.width  = (w * cell) + "px";
-    box.style.height = (h * cell) + "px";
+    box.style.left   = ((vb.y + PAD) * cell) + "px";
+    box.style.top    = ((vb.x + PAD) * cell) + "px";
+    box.style.width  = (vb.w * cell) + "px";
+    box.style.height = (vb.h * cell) + "px";
     box.dataset.idx = idx;
     box.innerHTML = `
       <div class="id-num">${idx}</div>
       <div class="meta">${m.type} ${h}×${w}${m.dist?` r${m.dist}`:''}</div>
       ${m.note ? `<div class="note">${escapeHtml(m.note)}</div>` : ""}
+      <button class="act-btn" data-act="dup" title="复制：创建一台同类型/尺寸/备注/空闲端口的新机器（不带任何连接）">⎘</button>
+      <button class="act-btn" data-act="rot" title="顺时针旋转 90°">⟳</button>
     `;
     box.addEventListener("mousedown", e => onMachMouseDown(e, idx));
     addPortButtons(box, idx, cell);
@@ -742,7 +907,22 @@ function renderCanvas() {
 
 // ========== 求解结果叠加层 ==========
 // solution: { n, m, machs:[{id,type,size,pos,rot,p,occ_h,occ_w,...}], belts:[{type,frm,to,edges:[[[r,c],[r,c]], ...]}] }
+// 注意：solution 是派生于 preview 的视图变量 —— 由 enterPreview / switchPreviewView 维护，不要直接赋值。
 let solution = null;
+
+// ========== 预览模式（导入 JSON 后只读查看，不污染编辑器存档） ==========
+// preview = null  → 编辑模式（默认）
+// preview = {
+//   source: "aic" | "solution",      // 用户导入的文件类型
+//   design: { mach, belt, n, m, _editor?, name?, description?, note? } | null,
+//   solutionResult: { n, m, machs, belts, problem?, input? } | null,
+//   view: "design" | "solution",     // 当前展示哪一侧
+//   stashedState: <原 state 深拷贝>,  // 退出预览时还原
+// }
+// 进入预览时把 state 替换为"该 view 对应数据的可渲染形态"——所有现有渲染代码自动工作；
+// saveState 在预览模式下变 no-op，所以临时 state 不会写入 localStorage。
+let preview = null;
+function isPreview() { return preview !== null; }
 
 // 求解结果模式下被点选的机器 id（独立于 state.selected）
 let solSelected = -1;
@@ -751,18 +931,20 @@ let solShow = { belt: true, pipe: true };
 
 function renderSolutionOverlay(canvas) {
   const cell = state.cell;
+  const solN = solution.n, solM = solution.m;
 
-  // 机器（用 sol 的 pos 与 occ_h/occ_w 渲染矩形）
+  // 机器（用 sol 的 pos 与 occ_h/occ_w 渲染矩形，套视图变换）
   solution.machs.forEach(sm => {
     const [x, y] = sm.pos;
     const h = sm.occ_h ?? sm.size[0];
     const w = sm.occ_w ?? sm.size[1];
+    const vb = viewBox(x, y, h, w, solN, solM);
     const box = document.createElement("div");
     box.className = `sol-mach t-${sm.type}` + (sm.id === solSelected ? " sol-selected" : "");
-    box.style.left   = ((y + PAD) * cell) + "px";
-    box.style.top    = ((x + PAD) * cell) + "px";
-    box.style.width  = (w * cell) + "px";
-    box.style.height = (h * cell) + "px";
+    box.style.left   = ((vb.y + PAD) * cell) + "px";
+    box.style.top    = ((vb.x + PAD) * cell) + "px";
+    box.style.width  = (vb.w * cell) + "px";
+    box.style.height = (vb.h * cell) + "px";
     const rotInfo = `${sm.rot * 90}°${sm.p ? "·镜像" : ""}`;
     box.innerHTML = `<div>#${sm.id}</div><div class="meta">${sm.type} ${rotInfo}</div>`;
     box.style.cursor = "pointer";
@@ -772,27 +954,27 @@ function renderSolutionOverlay(canvas) {
       solSelected = (solSelected === sm.id) ? -1 : sm.id;
       renderAll();
     });
-    // 端口圆点：复用编辑器的 .port-btn 样式，定位到机器矩形内对应外边缘格子
-    // dir : 0=下 1=右 2=上 3=左 (机器外法向)
+    // 端口圆点：先把 (cell[0], cell[1]) 经 viewBox 变换到视图格子坐标，再相对 box 内部定位。
     if (sm.ports) {
       sm.ports.forEach(po => {
         const isPipe = Math.abs(po.kind) === 2;
         if (!isPipe && !solShow.belt) return;
         if (isPipe && !solShow.pipe) return;
 
-        // 端口在机器矩形内的格子偏移
-        const ci = po.cell[0] - x;
-        const cj = po.cell[1] - y;
+        // 视图下 1×1 端口格子位置：把端口所在的单格子 (po.cell) 经 viewBox 变换
+        const pcVb = viewBox(po.cell[0], po.cell[1], 1, 1, solN, solM);
+        const ci = pcVb.x - vb.x;     // 端口格在 box 内部的视图行偏移
+        const cj = pcVb.y - vb.y;     // 端口格在 box 内部的视图列偏移
         const half = 7;
-        // 该格中心
         const gcx = cj * cell + cell / 2;
         const gcy = ci * cell + cell / 2;
-        // 沿 dir 偏到格子外边缘
+        // 视图 dir
+        const vdir = ((po.dir - viewRot()) % 4 + 4) % 4;
         let left = gcx, top = gcy;
-        if (po.dir === 0)      { top  = (ci + 1) * cell; }
-        else if (po.dir === 1) { left = (cj + 1) * cell; }
-        else if (po.dir === 2) { top  = ci * cell; }
-        else /* 3 */            { left = cj * cell; }
+        if (vdir === 0)      { top  = (ci + 1) * cell; }
+        else if (vdir === 1) { left = (cj + 1) * cell; }
+        else if (vdir === 2) { top  = ci * cell; }
+        else /* 3 */         { left = cj * cell; }
 
         const btn = document.createElement("button");
         const beltType = isPipe ? 2 : 1;
@@ -800,10 +982,10 @@ function renderSolutionOverlay(canvas) {
         btn.className = `port-btn used-${role}-${beltType}`;
         btn.style.left = (left - half) + "px";
         btn.style.top  = (top  - half) + "px";
-        // 白色三角箭头：出口朝外 (沿 dir)，入口朝内 (反 dir)
-        const outArrow = ["▼", "▶", "▲", "◀"]; // 朝外: side/dir -> 字符
+        // 白色三角箭头：出口朝外 (沿 vdir)，入口朝内 (反 vdir)
+        const outArrow = ["▼", "▶", "▲", "◀"];
         const inArrow  = ["▲", "◀", "▼", "▶"];
-        btn.textContent = (po.kind < 0 ? outArrow[po.dir] : inArrow[po.dir]);
+        btn.textContent = (po.kind < 0 ? outArrow[vdir] : inArrow[vdir]);
         const labelMap = { "-2":"管道出口", "-1":"传送带出口", "1":"传送带入口", "2":"管道入口" };
         btn.title = `机器 #${sm.id} · ${labelMap[po.kind]}`;
         // 非关联机器时压低视觉强度
@@ -821,7 +1003,7 @@ function renderSolutionOverlay(canvas) {
     canvas.appendChild(box);
   });
 
-  // belts (折线把 edges 串连)
+  // belts (折线把 edges 串连，每个端点经 viewBox 变换)
   const svgNS = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(svgNS, "svg");
   svg.setAttribute("class", "sol-svg");
@@ -834,11 +1016,14 @@ function renderSolutionOverlay(canvas) {
     const isRelated = (solSelected >= 0 && (sb.frm === solSelected || sb.to === solSelected));
     sb.edges.forEach(([a, b]) => {
       const [ax, ay] = a, [bx, by] = b;
+      // 把每个 1×1 单格中心经 viewBox 变换
+      const va = viewBox(ax, ay, 1, 1, solN, solM);
+      const vb = viewBox(bx, by, 1, 1, solN, solM);
       const line = document.createElementNS(svgNS, "line");
-      line.setAttribute("x1", (ay + PAD + 0.5) * cell);
-      line.setAttribute("y1", (ax + PAD + 0.5) * cell);
-      line.setAttribute("x2", (by + PAD + 0.5) * cell);
-      line.setAttribute("y2", (bx + PAD + 0.5) * cell);
+      line.setAttribute("x1", (va.y + PAD + 0.5) * cell);
+      line.setAttribute("y1", (va.x + PAD + 0.5) * cell);
+      line.setAttribute("x2", (vb.y + PAD + 0.5) * cell);
+      line.setAttribute("y2", (vb.x + PAD + 0.5) * cell);
       line.setAttribute("class", `sol-edge t-${sb.type}` + (isRelated ? " sol-edge-hl" : ""));
       line.setAttribute("stroke-width", Math.max(3, cell * 0.18));
       svg.appendChild(line);
@@ -905,8 +1090,8 @@ function renderBeltLines(canvas) {
     //       未选中任何机器时 → 所有连接均淡化 (dim)
     const cls = `belt-line t-${b.type} ` + (state.selected >= 0 && isRelated ? "hl" : "dim");
 
-    // 正交布线：从端口先沿其法向延伸一小段，再转向到目标
-    const d = routeOrtho(x1, y1, b.frmPort[0], x2, y2, b.toPort[0], cell);
+    // 正交布线：从端口先沿其法向延伸一小段，再转向到目标。视图旋转下用 viewSide。
+    const d = routeOrtho(x1, y1, viewSide(b.frmPort[0]), x2, y2, viewSide(b.toPort[0]), cell);
     const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
     path.setAttribute("d", d);
     path.setAttribute("class", cls);
@@ -931,6 +1116,9 @@ function renderBeltLines(canvas) {
 function addPortButtons(box, idx, cell) {
   const m = state.machs[idx];
   const [h, w] = m.size;
+  // 视图下机器尺寸（h/w 可能因为视图旋转互换）
+  const vh = (viewRot() % 2 === 0) ? h : w;
+  const vw = (viewRot() % 2 === 0) ? w : h;
   const usedMap = portsOfMach(idx);
   const half = 7;
   // 显示策略：
@@ -939,10 +1127,21 @@ function addPortButtons(box, idx, cell) {
   //    若机器被选中，则显示所有边缘端口（让用户可点亮新位置）
   const showAll = (state.tool !== "pan") || (state.selected === idx);
 
-  const place = (side, pos, left, top) => {
+  // 渲染时：以视图 side / pos 决定按钮在 box 内的位置；事件 callback 用底层 (side, pos) 不变。
+  const place = (side, pos) => {
     const key = `${side},${pos}`;
     const used = usedMap.get(key);
     if (!showAll && !used) return;
+    const vside = viewSide(side);
+    // 视图中按钮的中心相对 box 左上的偏移（按视图侧 + 视图机器尺寸 vh × vw 计算）
+    let dx, dy;
+    if (vside === 0)      { dy = vh * cell;            dx = pos * cell + cell/2; }
+    else if (vside === 1) { dy = (vh-1-pos)*cell + cell/2; dx = vw * cell; }
+    else if (vside === 2) { dy = 0;                    dx = (vw-1-pos) * cell + cell/2; }
+    else /* 3 */          { dy = pos*cell + cell/2;    dx = 0; }
+    const left = dx - half;
+    const top  = dy - half;
+
     const btn = document.createElement("button");
     let cls = "port-btn";
     if (used) {
@@ -964,10 +1163,10 @@ function addPortButtons(box, idx, cell) {
             ? ` (空闲声明: ${labelMap[used.kind]})`
             : ` (${used.role === "from" ? "出" : "入"} · belt ${used.beltIdx})`)
         : " (未使用)");
-    // 三角朝向：出口指向机器外侧，入口指向机器内侧
+    // 三角朝向：出口指向机器外侧，入口指向机器内侧。视图旋转下用 vside 决定屏幕方向。
     const outArrow = ["▼", "▶", "▲", "◀"];
     const inArrow  = ["▲", "◀", "▼", "▶"];
-    btn.textContent = used ? (used.role === "from" ? outArrow[side] : inArrow[side]) : "";
+    btn.textContent = used ? (used.role === "from" ? outArrow[vside] : inArrow[vside]) : "";
     btn.addEventListener("mousedown", e => { e.stopPropagation(); e.preventDefault(); });
     btn.addEventListener("click", e => { e.stopPropagation(); onPortClick(idx, side, pos); });
     btn.addEventListener("contextmenu", e => {
@@ -978,13 +1177,14 @@ function addPortButtons(box, idx, cell) {
     box.appendChild(btn);
   };
 
+  // 仍按底层 (side, pos) 枚举 —— 数据空间无变化
   for (let j = 0; j < w; j++) {
-    place(0, j,     j*cell + cell/2 - half, h*cell - half);     // 下
-    place(2, w-1-j, j*cell + cell/2 - half, -half);             // 上
+    place(0, j);            // 底层"下"边
+    place(2, w-1-j);        // 底层"上"边
   }
   for (let i = 0; i < h; i++) {
-    place(1, h-1-i, w*cell - half,         i*cell + cell/2 - half); // 右
-    place(3, i,     -half,                 i*cell + cell/2 - half); // 左
+    place(1, h-1-i);        // 底层"右"边
+    place(3, i);            // 底层"左"边
   }
 }
 
@@ -1071,14 +1271,46 @@ function onPortClick(idx, side, pos) {
 }
 
 function removeBelt(beltIdx) {
+  // 删除连接时把它占用的两端端口还原为"空闲端口声明"，保留端口类型，
+  // 方便用户日后重新连接 / 让求解器仍把这个口子作为候选位置。
+  const b = state.belts[beltIdx];
+  if (b) restoreFreePortsOfBelt(b);
   state.belts.splice(beltIdx, 1);
   saveState(); renderAll();
+}
+
+// 把一条 belt 两端的端口还原回对应机器的 freePorts（保留连接所用的 kind）。
+// belt.type = 1 (传送带) → frm 端 kind = -1 (传送带出)，to 端 kind = +1 (传送带入)
+// belt.type = 2 (管道)   → frm 端 kind = -2 (管道出)，  to 端 kind = +2 (管道入)
+// `skipMachIdx` 跳过这个机器（如机器即将被删除，无需还原到不存在的机器上）。
+// `validPort(idx, side, pos)` 可选；若提供且对某端返回 false，则该端不还原。
+function restoreFreePortsOfBelt(b, skipMachIdx, validPort) {
+  const ends = [
+    { mIdx: b.frm, port: b.frmPort, kind: -b.type },
+    { mIdx: b.to,  port: b.toPort,  kind:  b.type },
+  ];
+  for (const { mIdx, port, kind } of ends) {
+    if (mIdx == null || mIdx < 0 || !port) continue;
+    if (mIdx === skipMachIdx) continue;
+    if (validPort && !validPort(mIdx, port[0], port[1])) continue;
+    const m = state.machs[mIdx];
+    if (!m) continue;
+    ensureFreePorts(m);
+    const [s, p] = port;
+    removeFreePortAt(mIdx, s, p);     // 去掉该位置上其它 kind 的旧声明
+    m.freePorts[kind].push([s, p]);
+  }
 }
 
 // ========== 拖动 ==========
 let drag = null;
 function onMachMouseDown(e, idx) {
   if (e.button !== 0) return;
+  // 动作按钮（复制/旋转）：不进入拖拽 / 选择逻辑，交给 click handler
+  if (e.target && e.target.dataset && e.target.dataset.act) {
+    e.stopPropagation();
+    return;
+  }
   // 仅在 pan 工具下允许拖动
   if (state.tool === "pan") {
     startDrag(e, idx);
@@ -1109,16 +1341,16 @@ function startDrag(e, idx) {
 function onDrag(e) {
   if (!drag) return;
   const cell = state.cell;
-  const dx = Math.round((e.clientY - drag.startY) / cell);
-  const dy = Math.round((e.clientX - drag.startX) / cell);
-  if (dx === 0 && dy === 0 && !drag.moved) return;
+  // 屏幕拖拽位移先经视图旋转逆变换为底层位移
+  const baseDelta = screenToBaseDelta(e.clientX - drag.startX, e.clientY - drag.startY, cell);
+  if (baseDelta.dx === 0 && baseDelta.dy === 0 && !drag.moved) return;
   drag.moved = true;
   const m = state.machs[drag.idx];
   const [h, w] = m.size;
   const wa = workArea();
   // 仅受工作区边界限制 (n*m 不再限制 — 让用户自由摆放)
-  const newX = Math.max(-wa.pad, Math.min(state.n + wa.pad - h, drag.origPos[0] + dx));
-  const newY = Math.max(-wa.pad, Math.min(state.m + wa.pad - w, drag.origPos[1] + dy));
+  const newX = Math.max(-PAD, Math.min(state.n + PAD - h, drag.origPos[0] + baseDelta.dx));
+  const newY = Math.max(-PAD, Math.min(state.m + PAD - w, drag.origPos[1] + baseDelta.dy));
   if (m.pos[0] !== newX || m.pos[1] !== newY) {
     m.pos = [newX, newY];
     renderCanvas();
@@ -1255,9 +1487,16 @@ function cleanupPorts(m) {
   const [h, w] = m.size;
   const validPort = (s, pos) => (s === 0 || s === 2) ? (pos >= 0 && pos < w) : (pos >= 0 && pos < h);
   const idx = state.machs.indexOf(m);
+  // 检查任意机器/位置是否仍合法（仅对当前 m 用 validPort，其它机器一律视为合法）
+  const validForMach = (mi, s, p) => mi === idx ? validPort(s, p) : true;
   state.belts = state.belts.filter(b => {
-    if (b.frm === idx && b.frmPort && !validPort(b.frmPort[0], b.frmPort[1])) return false;
-    if (b.to  === idx && b.toPort  && !validPort(b.toPort[0],  b.toPort[1]))  return false;
+    const frmBad = b.frm === idx && b.frmPort && !validPort(b.frmPort[0], b.frmPort[1]);
+    const toBad  = b.to  === idx && b.toPort  && !validPort(b.toPort[0],  b.toPort[1]);
+    if (frmBad || toBad) {
+      // 把仍合法的另一端还原为空闲端口声明，保留端口类型
+      restoreFreePortsOfBelt(b, undefined, validForMach);
+      return false;
+    }
     return true;
   });
   if (m.freePorts) {
@@ -1294,7 +1533,7 @@ function renderBeltList() {
     };
     div.querySelector(".del-btn").onclick = (e) => {
       e.stopPropagation();
-      state.belts.splice(i, 1); saveState(); renderAll();
+      removeBelt(i);
     };
     list.appendChild(div);
   });
@@ -1362,10 +1601,17 @@ function renderAll() {
   document.getElementById("grid-m").value = state.m;
   document.getElementById("cell-px").value = state.cell;
   document.getElementById("cell-px-val").textContent = state.cell + "px";
+  // 同步问题信息字段
+  if (!state.problem) state.problem = { name: "", description: "", note: "" };
+  document.getElementById("prob-name").value = state.problem.name || "";
+  document.getElementById("prob-desc").value = state.problem.description || "";
+  document.getElementById("prob-note").value = state.problem.note || "";
   renderCanvas();
   renderDetail();
   renderBeltList();
   renderCode();
+  // 预览模式下也同步刷新顶部 banner（segmented 按钮 active 状态 / 文本）
+  if (preview) refreshPreviewBannerUI();
 }
 
 // ========== 事件绑定 ==========
@@ -1433,17 +1679,25 @@ document.querySelectorAll(".tool-btn").forEach(b => {
   b.onclick = () => setTool(b.dataset.tool);
 });
 
-// 端口几何旋转: 顺时针 90°，机器尺寸由 h*w → w*h
-// (side, pos) → ((side + 3) % 4, pos)
-// 推导见 README：旋转保持机器与"逆时针起角"同步转动，pos 不变；side 顺移
+// 端口几何旋转: 顺时针 90°（机器自身物理顺转），机器尺寸由 h*w → w*h
+// (side, pos) → ((side + 1) % 4, pos)
+// 与求解器一致（参见 main.py：tmp_d == k only_enforce_if rot[(k - num + 4) % 4]，
+// 即 final_dir = (orig_side + r) % 4）。
+// 物理直观：原本朝下 (side=0) 的边，机器顺转 90° 后朝右 (side=1)；pos 沿"逆时针起角"的约定不变。
 function rotPortCW(side, pos) {
-  return [(side + 3) % 4, pos];
+  return [(side + 1) % 4, pos];
 }
 
-document.getElementById("btn-rotate-mach").onclick = () => {
-  if (state.selected < 0) return;
-  const idx = state.selected;
+document.getElementById("btn-rotate-all").onclick = () => {
+  rotateAllCW();
+};
+
+// 单个机器顺时针 90° 旋转：端口几何变换 + 尺寸交换
+// 不改变 pos（左上角格点），只就地旋转
+function rotateMachine(idx) {
+  if (idx == null || idx < 0) return;
   const m = state.machs[idx];
+  if (!m) return;
   // 1. 端口变换
   state.belts.forEach(b => {
     if (b.frm === idx && b.frmPort) b.frmPort = rotPortCW(b.frmPort[0], b.frmPort[1]);
@@ -1461,7 +1715,74 @@ document.getElementById("btn-rotate-mach").onclick = () => {
   // 2. 尺寸交换
   m.size = [m.size[1], m.size[0]];
   clipPos(m); saveState(); renderAll();
-};
+}
+
+// 整体顺时针视觉旋转 90°：只改 state.viewRot，不动底层 machs / belts / n / m。
+// 这样导出 .aic.json / 求解结果完全不受视图旋转影响（port 的 x=0 约束等保持有效）。
+function rotateAllCW() {
+  state.viewRot = (((state.viewRot || 0) + 1) % 4 + 4) % 4;
+  saveState(); renderAll();
+  toast(state.viewRot === 0
+    ? `视图已恢复 0°（底层网格 ${state.n}×${state.m}）`
+    : `视图旋转 ${state.viewRot * 90}°（底层网格 ${state.n}×${state.m} 不变）`);
+}
+
+// 机器内部右上角动作按钮（复制 / 旋转）：事件委托
+document.getElementById("canvas").addEventListener("click", e => {
+  const btn = e.target.closest && e.target.closest("[data-act]");
+  if (!btn) return;
+  const box = btn.closest(".mach-box");
+  if (!box) return;
+  const idx = parseInt(box.dataset.idx, 10);
+  if (Number.isNaN(idx)) return;
+  e.stopPropagation();
+  state.selected = idx;
+  const act = btn.dataset.act;
+  if (act === "rot") rotateMachine(idx);
+  else if (act === "dup") duplicateMachine(idx);
+});
+
+// 复制机器：深拷贝 type / size / dist / note / freePorts，不带任何 belt 连接。
+// 原机器**已被 belt 占用**的端口在新机器上以"空闲端口声明"形式保留（kind 与 belt 类型对应），
+// 这样新机器的端口分布跟原机器在视觉上一致，只是没有具体连线 —— 用户随时可重新连。
+// 新机器位置由 findFreePos 决定（避开已有机器，求解区中心附近优先）。
+function duplicateMachine(idx) {
+  const src = state.machs[idx];
+  if (!src) return;
+  const fp = { "-2":[], "-1":[], "1":[], "2":[] };
+  if (src.freePorts) {
+    for (const k of [-2,-1,1,2]) {
+      fp[k] = (src.freePorts[k] || []).map(arr => [...arr]);
+    }
+  }
+  // 把原机器在 belt 中占用的端口（不在 src.freePorts 里）按连接所用 kind 也补进新机器的 freePorts。
+  // 与 removeBelt 还原 freePort 的规则保持一致：frm 端 kind = -belt.type, to 端 kind = +belt.type。
+  const seen = new Set();         // "side,pos" 防同位置重复
+  for (const k of [-2,-1,1,2]) fp[k].forEach(([s,p]) => seen.add(`${s},${p}`));
+  state.belts.forEach(b => {
+    const ends = [];
+    if (b.frm === idx && b.frmPort) ends.push({ port: b.frmPort, kind: -b.type });
+    if (b.to  === idx && b.toPort)  ends.push({ port: b.toPort,  kind:  b.type });
+    for (const { port, kind } of ends) {
+      const key = `${port[0]},${port[1]}`;
+      if (seen.has(key)) continue;
+      fp[kind].push([port[0], port[1]]);
+      seen.add(key);
+    }
+  });
+  const copy = {
+    type: src.type,
+    size: [...src.size],
+    freePorts: fp,
+  };
+  if (src.dist !== undefined) copy.dist = src.dist;
+  if (src.note) copy.note = src.note;
+  copy.pos = findFreePos(copy.size[0], copy.size[1]);
+  state.machs.push(copy);
+  state.selected = state.machs.length - 1;
+  saveState(); renderAll();
+  toast(`已复制机器 #${idx} → #${state.selected}（端口声明保留，连接未复制）`);
+}
 
 document.getElementById("btn-delete-mach").onclick = () => {
   if (state.selected < 0) return;
@@ -1470,28 +1791,73 @@ document.getElementById("btn-delete-mach").onclick = () => {
 };
 
 document.addEventListener("keydown", e => {
-  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  // 在文本输入控件里不拦截
+  const tag = e.target && e.target.tagName;
+  if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+  if (e.target && e.target.isContentEditable) return;
+
+  // 删除选中机器
   if ((e.key === "Delete" || e.key === "Backspace") && state.selected >= 0) {
+    e.preventDefault();
     deleteMach(state.selected);
+    return;
   }
+
+  // Esc：先取消进行中的连接；非平移工具则切回平移；最后才取消选中
   if (e.key === "Escape") {
-    if (connectFrom) { connectFrom = null; renderAll(); return; }
-    state.selected = -1; renderAll();
+    let handled = false;
+    if (connectFrom) { connectFrom = null; handled = true; }
+    if (state.tool !== "pan") { setTool("pan"); handled = true; }
+    if (!handled) state.selected = -1;
+    renderAll();
+    return;
   }
-  // 工具切换快捷键
-  if (e.key === "v" || e.key === "V") setTool("pan");
-  if (e.key === "b" || e.key === "B") setTool("belt");
-  if (e.key === "p" || e.key === "P") setTool("pipe");
-  // 方向键微调
+
+  // 工具切换（用 e.code 不受 capslock / 输入法影响；带修饰键不响应避免误触）
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.code === "KeyM") { setTool("pan");  e.preventDefault(); return; }
+  if (e.code === "KeyE") { setTool("belt"); e.preventDefault(); return; }
+  if (e.code === "KeyQ") { setTool("pipe"); e.preventDefault(); return; }
+
+  // R：选中机器时旋转机器，否则整体旋转画布
+  // 求解结果视图下 state 是后台保留的另一份数据，不应被键盘操作误改 —— 仅允许视图旋转。
+  if (e.code === "KeyR") {
+    const inSolView = preview && preview.view === "solution";
+    if (state.selected >= 0 && !inSolView) rotateMachine(state.selected);
+    else rotateAllCW();
+    e.preventDefault();
+    return;
+  }
+
+  // WASD：平移画布（任何工具下都可用，按 Shift 加速）
+  if (e.code === "KeyW" || e.code === "KeyA" || e.code === "KeyS" || e.code === "KeyD") {
+    const wrap = document.getElementById("canvas-wrap");
+    const step = (e.shiftKey ? 4 : 1) * state.cell;
+    if (e.code === "KeyW") wrap.scrollTop  -= step;
+    if (e.code === "KeyS") wrap.scrollTop  += step;
+    if (e.code === "KeyA") wrap.scrollLeft -= step;
+    if (e.code === "KeyD") wrap.scrollLeft += step;
+    e.preventDefault();
+    return;
+  }
+
+  // 方向键：微调选中机器位置（按"屏幕方向"，再经视图旋转逆变换为底层位移）
+  // 求解结果视图下 state 与画面不一致，禁用以免误改。
+  if (preview && preview.view === "solution") return;
   if (state.selected >= 0) {
     const m = state.machs[state.selected];
-    let moved = false;
-    const wa = workArea();
-    if (e.key === "ArrowUp")    { m.pos[0] = Math.max(-wa.pad, m.pos[0]-1); moved=true; }
-    if (e.key === "ArrowDown")  { m.pos[0] = Math.min(state.n + wa.pad - m.size[0], m.pos[0]+1); moved=true; }
-    if (e.key === "ArrowLeft")  { m.pos[1] = Math.max(-wa.pad, m.pos[1]-1); moved=true; }
-    if (e.key === "ArrowRight") { m.pos[1] = Math.min(state.m + wa.pad - m.size[1], m.pos[1]+1); moved=true; }
-    if (moved) { e.preventDefault(); saveState(); renderAll(); }
+    const [h, w] = m.size;
+    const isArrow = (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight");
+    if (isArrow) {
+      const baseDelta = arrowToBaseDelta(e.key);
+      const newX = Math.max(-PAD, Math.min(state.n + PAD - h, m.pos[0] + baseDelta.dx));
+      const newY = Math.max(-PAD, Math.min(state.m + PAD - w, m.pos[1] + baseDelta.dy));
+      if (newX !== m.pos[0] || newY !== m.pos[1]) {
+        m.pos = [newX, newY];
+        e.preventDefault();
+        saveState(); renderAll();
+      }
+    }
   }
 });
 
@@ -1550,21 +1916,430 @@ document.getElementById("canvas-wrap").addEventListener("auxclick", e => {
 document.getElementById("btn-copy-code").onclick = () => {
   navigator.clipboard.writeText(generateCode()).then(() => toast("代码已复制"));
 };
-document.getElementById("btn-download-py").onclick = () => {
-  const blob = new Blob([generateCode()], {type:"text/x-python"});
+
+// 问题信息字段
+document.getElementById("prob-name").oninput = e => {
+  if (!state.problem) state.problem = { name:"", description:"", note:"" };
+  state.problem.name = e.target.value; saveState();
+};
+document.getElementById("prob-desc").oninput = e => {
+  if (!state.problem) state.problem = { name:"", description:"", note:"" };
+  state.problem.description = e.target.value; saveState();
+};
+document.getElementById("prob-note").oninput = e => {
+  if (!state.problem) state.problem = { name:"", description:"", note:"" };
+  state.problem.note = e.target.value; saveState();
+};
+
+// ========== JSON 文件类型判别 & 转换工具 ==========
+// 检测一份 JSON 对象的格式：
+//   "aic"      —— .aic.json 原始描述（顶层 mach[] + belt[]）
+//   "solution" —— solution.json 求解结果（顶层 machs[] + belts[]，belts 内有 edges）
+//   null       —— 都不是
+function detectJsonKind(obj) {
+  if (!obj || typeof obj !== "object") return null;
+  if (Array.isArray(obj.mach) && Array.isArray(obj.belt)) return "aic";
+  if (Array.isArray(obj.machs) && Array.isArray(obj.belts)) return "solution";
+  return null;
+}
+
+// 从 solution（含 machs/ports + belts/edges）反推每条 belt 两端的底层 [side, pos] 端口归属。
+// 返回与 solution.belts 等长的数组：[{ frmPort:[side,pos], toPort:[side,pos] } | null, ...]
+//
+// ⚠ 不能直接信任 `solution.input._editor.belts[i].frmPort/toPort`：那是用户在编辑器里
+//   "原意"绑定的端口，但求解器对每条 belt 的端口是自由选择的（main.py 中 `ch_frm/ch_to`），
+//   一般会与原意不同。要拿"求解器实际用了哪个端口"，必须从 belts[i].edges 折线端点反查。
+//
+// 算法：对每条 belt 的 edges（无向 1×1 边集）统计每个格子的度数；
+//   degree=1 的两个格子就是折线两端 → 与 machs[frm/to].ports[*].cell 匹配 → port.orig 即原始 [side, pos]。
+function inferBeltPortsFromSolution(sol) {
+  const result = sol.belts.map(() => null);
+  sol.belts.forEach((sb, bi) => {
+    const edges = sb.edges || [];
+    if (edges.length === 0) return; // 长度 0 的特殊情形，留 null
+    // 度数统计
+    const degree = new Map(); // "r,c" -> count
+    const inc = (cell) => {
+      const k = `${cell[0]},${cell[1]}`;
+      degree.set(k, (degree.get(k) || 0) + 1);
+    };
+    edges.forEach(([a, b]) => { inc(a); inc(b); });
+    const endpoints = [];
+    for (const [k, d] of degree.entries()) {
+      if (d === 1) {
+        const [r, c] = k.split(",").map(Number);
+        endpoints.push([r, c]);
+      }
+    }
+    if (endpoints.length !== 2) return; // 异常情况，留 null
+
+    // 把端点格子与机器的端口列表匹配；先严格按"出/入方向"匹配，再宽松按 cell 兜底。
+    const findPortByCell = (machId, cell, wantOutgoing) => {
+      const sm = sol.machs.find(m => m.id === machId);
+      if (!sm || !Array.isArray(sm.ports)) return null;
+      const sign = wantOutgoing ? -1 : 1;
+      let hit = sm.ports.find(p => Array.isArray(p.cell)
+        && p.cell[0] === cell[0] && p.cell[1] === cell[1]
+        && Math.sign(p.kind) === sign
+        && Math.abs(p.kind) === sb.type);
+      if (hit) return hit;
+      hit = sm.ports.find(p => Array.isArray(p.cell)
+        && p.cell[0] === cell[0] && p.cell[1] === cell[1]);
+      return hit || null;
+    };
+    // edges 是无向集合 → 两个 endpoint 哪头是起点未知；两种排列都试。
+    const tryPair = (a, b) => {
+      const pf = findPortByCell(sb.frm, a, true);
+      const pt = findPortByCell(sb.to,  b, false);
+      return (pf && pt) ? { frmPort: [...pf.orig], toPort: [...pt.orig] } : null;
+    };
+    const r1 = tryPair(endpoints[0], endpoints[1]);
+    if (r1) { result[bi] = r1; return; }
+    const r2 = tryPair(endpoints[1], endpoints[0]);
+    if (r2) { result[bi] = r2; return; }
+  });
+  return result;
+}
+
+// ========== 预览模式：进入 / 退出 / 切换视图 ==========
+// 进入预览：把当前编辑器 state 备份到 preview.stashedState；
+// view 决定首屏显示哪一侧（design / solution）。
+function enterPreview(parsedObj) {
+  const kind = detectJsonKind(parsedObj);
+  if (!kind) { toast("文件不是 .aic.json 或 solution.json"); return false; }
+
+  // 解析两侧数据
+  let designData = null, solutionData = null;
+  if (kind === "aic") {
+    designData = parsedObj;
+  } else {
+    solutionData = parsedObj;
+    if (parsedObj.input && Array.isArray(parsedObj.input.mach) && Array.isArray(parsedObj.input.belt)) {
+      // 合并 problem 元数据，方便 design 模式下显示问题信息
+      designData = {
+        ...parsedObj.input,
+        name:        (parsedObj.problem && parsedObj.problem.name)        || parsedObj.input.name        || "",
+        description: (parsedObj.problem && parsedObj.problem.description) || parsedObj.input.description || "",
+        note:        (parsedObj.problem && parsedObj.problem.note)        || parsedObj.input.note        || "",
+      };
+    }
+  }
+
+  // 备份当前 state（深拷贝），创建 preview 状态
+  const stashed = JSON.parse(JSON.stringify(state));
+  preview = {
+    source: kind,
+    design: designData,
+    solutionResult: solutionData,
+    view: solutionData ? "solution" : "design",
+    stashedState: stashed,
+  };
+  applyPreviewView();
+  return true;
+}
+
+// 把 preview.view 对应的数据写入 state（不持久化），并维护派生的 solution 变量。
+function applyPreviewView() {
+  if (!preview) return;
+  if (preview.view === "design") {
+    if (!preview.design) {
+      // 防御：理论上 UI 会禁用，按下也再切回另一侧
+      preview.view = "solution";
+      return applyPreviewView();
+    }
+    // 用 loadAicObject 的逻辑装载到 state，但因 saveState 在预览模式被短路 → 不写入 localStorage
+    solution = null; // 关闭求解结果叠加层
+    loadAicObject(preview.design);
+  } else {
+    if (!preview.solutionResult) {
+      preview.view = "design";
+      return applyPreviewView();
+    }
+    // 求解结果模式：保持 state 内容（design 或空），让 solution 叠加层显示求解结果
+    solution = preview.solutionResult;
+  }
+  document.body.classList.add("preview-mode");
+  document.body.classList.toggle("show-solution", preview.view === "solution");
+  refreshPreviewBannerUI();
+  renderAll();
+}
+
+function refreshPreviewBannerUI() {
+  if (!preview) {
+    document.getElementById("preview-banner").style.display = "none";
+    return;
+  }
+  const banner = document.getElementById("preview-banner");
+  banner.style.display = "";
+  banner.classList.toggle("mode-design", preview.view === "design");
+  const text = document.getElementById("preview-banner-text");
+  const sol = preview.solutionResult;
+  const dsg = preview.design;
+  let line = "";
+  if (preview.view === "solution" && sol) {
+    line = `求解结果预览：${sol.machs.length} 机器，${sol.belts.length} 连接，${sol.n}×${sol.m}`;
+  } else if (preview.view === "design" && dsg) {
+    const nMach = (dsg.mach || []).length;
+    const nBelt = (dsg.belt || []).length;
+    line = `原始设计预览：${nMach} 机器，${nBelt} 连接，${dsg.n}×${dsg.m}`;
+  }
+  text.textContent = line;
+  // segmented control 状态
+  const segDes = document.getElementById("btn-view-design");
+  const segSol = document.getElementById("btn-view-solution");
+  segDes.classList.toggle("active", preview.view === "design");
+  segSol.classList.toggle("active", preview.view === "solution");
+  segDes.disabled = !preview.design;
+  segSol.disabled = !preview.solutionResult;
+  segDes.title = preview.design ? "查看 JSON 中的原始问题描述" : "本文件不含原始设计数据";
+  segSol.title = preview.solutionResult ? "查看 JSON 中的求解结果" : "本文件不含求解结果";
+  // 传送带/管道切换按钮仅在求解结果视图下相关
+  document.getElementById("preview-belt-toggles").style.display =
+    (preview.view === "solution") ? "" : "none";
+}
+
+// 退出预览：还原 stashedState，清掉 solution 叠加层。
+function exitPreview() {
+  if (!preview) return;
+  state = preview.stashedState;
+  preview = null;
+  solution = null;
+  solSelected = -1;
+  document.body.classList.remove("preview-mode", "show-solution");
+  document.getElementById("preview-banner").style.display = "none";
+  saveState(); renderAll();
+}
+
+// 保存当前预览视图到编辑器（覆盖原 stashedState）。
+// design 视图：直接用 preview.design 当作 .aic.json 装入；
+// solution 视图：用 solution.machs 的位置/朝向 + 反推或 _editor 提供的 belt 端口归属，构造新的 state。
+function savePreviewToEditor() {
+  if (!preview) return;
+  if (!confirm("将用当前预览视图覆盖编辑器现有内容（机器位置/连接/freePorts/备注）。确定继续？")) return;
+
+  if (preview.view === "design") {
+    if (!preview.design) { toast("无原始设计数据"); return; }
+    // applyPreviewView 已经把 design 装入了 state，这里只需更新 stashed 作为"新的编辑器底本"。
+    // 注意：保留 preview.design 不变 —— 这样用户切到/切回原始设计仍能看到 JSON 中的原貌。
+    preview.stashedState = JSON.parse(JSON.stringify(state));
+    toast("已把原始设计保存到编辑器（点【返回编辑器】可看到生效；预览侧仍按 JSON 原貌显示）");
+    return;
+  }
+  // 求解结果视图
+  const sol = preview.solutionResult;
+  if (!sol) { toast("无求解结果数据"); return; }
+  const portPairs = inferBeltPortsFromSolution(sol);
+  // 端口"逐次 rotPortCW"：side → (side + rot) % 4，pos 不变。
+  // 等价于对机器执行 rot 次单机顺转，与求解器约定 (final_dir = orig_side + r) 一致。
+  const rotateSidePos = (side, pos, rot) => [((side + rot) % 4 + 4) % 4, pos];
+  // 构造新机器：用 solution 的位置 / 旋转后的尺寸 + 端口；备注 / freePorts 尽量用 input 还原。
+  const newMachs = sol.machs.map(sm => {
+    const rot = ((sm.rot || 0) % 4 + 4) % 4;
+    const [origH, origW] = sm.size;
+    // 套用 rot 次旋转后的尺寸：rot 偶数 → 不互换；奇数 → 互换。与 occ_h / occ_w 一致。
+    const newSize = (rot % 2 === 0) ? [origH, origW] : [origW, origH];
+    const mm = {
+      type: sm.type,
+      size: newSize,
+      pos:  [sm.pos[0], sm.pos[1]],  // 求解后的左上角，匹配 newSize 的占用矩形
+      freePorts: { "-2":[], "-1":[], "1":[], "2":[] },
+    };
+    if (sm.dist !== undefined) mm.dist = sm.dist;
+    // 备注：从 input._editor.machs 拿
+    if (sol.input && sol.input._editor
+        && Array.isArray(sol.input._editor.machs)
+        && sol.input._editor.machs[sm.id]
+        && sol.input._editor.machs[sm.id].note) {
+      mm.note = sol.input._editor.machs[sm.id].note;
+    }
+    // freePorts：以 input._editor 的为准，再对每个端口 (side,pos) 做 rot 次 rotPortCW。
+    let baseFp = null;
+    if (sol.input && sol.input._editor
+        && Array.isArray(sol.input._editor.machs)
+        && sol.input._editor.machs[sm.id]
+        && sol.input._editor.machs[sm.id].freePorts) {
+      baseFp = sol.input._editor.machs[sm.id].freePorts;
+    } else {
+      // 没 _editor：把原始 mach 字段里所有端口当作 freePorts（被 belt 用到的会在下面再剔除）
+      const inputMach = sol.input && Array.isArray(sol.input.mach) ? sol.input.mach[sm.id] : null;
+      if (inputMach) {
+        baseFp = {};
+        for (const k of [-2,-1,1,2]) {
+          baseFp[k] = inputMach[String(k)] || inputMach[k] || [];
+        }
+      }
+    }
+    if (baseFp) {
+      for (const k of [-2,-1,1,2]) {
+        mm.freePorts[k] = (baseFp[k] || []).map(a => rotateSidePos(a[0], a[1], rot));
+      }
+    }
+    return mm;
+  });
+  // 构造新 belt：把反推得到的 frmPort / toPort（原始 [side, pos]）也旋转 rot 次到对应机器的当前朝向
+  const newBelts = [];
+  sol.belts.forEach((sb, bi) => {
+    const pair = portPairs[bi];
+    if (!pair) return; // 反推失败的 belt 丢弃（极少见，会有 toast 提示）
+    const rotFrm = ((sol.machs[sb.frm].rot || 0) % 4 + 4) % 4;
+    const rotTo  = ((sol.machs[sb.to ].rot || 0) % 4 + 4) % 4;
+    newBelts.push({
+      type: sb.type, frm: sb.frm, to: sb.to,
+      frmPort: rotateSidePos(pair.frmPort[0], pair.frmPort[1], rotFrm),
+      toPort:  rotateSidePos(pair.toPort [0], pair.toPort [1], rotTo),
+    });
+  });
+  const droppedBelts = sol.belts.length - newBelts.length;
+  // 同时把这些 belt 占用的端口从 freePorts 中剔除（避免重复声明）
+  newBelts.forEach(b => {
+    const rm = (mIdx, port) => {
+      const m = newMachs[mIdx];
+      if (!m || !port) return;
+      for (const k of [-2,-1,1,2]) {
+        m.freePorts[k] = (m.freePorts[k] || []).filter(p => !(p[0] === port[0] && p[1] === port[1]));
+      }
+    };
+    rm(b.frm, b.frmPort);
+    rm(b.to,  b.toPort);
+  });
+
+  // 写入 state（覆盖原 stashedState，作为新的编辑器底本）
+  const probMeta = sol.problem || {};
+  state = {
+    machs: newMachs,
+    belts: newBelts,
+    n: sol.n, m: sol.m,
+    cell: state.cell || 40, selected: -1, tool: "pan",
+    viewRot: state.viewRot || 0,
+    problem: {
+      name: probMeta.name || "",
+      description: probMeta.description || "",
+      note: probMeta.note || "",
+    },
+  };
+  preview.stashedState = JSON.parse(JSON.stringify(state));
+  // 注意：保留 preview.design 不变 —— "原始设计"侧仍显示 JSON 中的原貌，
+  // 保存的版本只在【返回编辑器】后生效（避免误导用户以为原始设计被改写）。
+  let msg = "已把求解结果保存到编辑器（点【返回编辑器】可看到生效；预览侧仍按 JSON 原貌显示）";
+  if (droppedBelts > 0) msg += `；${droppedBelts} 条连接因无法反推端口归属被跳过`;
+  toast(msg);
+}
+
+// 把一个 .aic.json 对象 (mach/belt/n/m/_editor) 加载为编辑器 state
+function loadAicObject(obj) {
+  const ext = obj._editor;
+  const newMachs = obj.mach.map((m, i) => {
+    const mm = { type: m.type, size: [...m.size] };
+    if (m.dist !== undefined) mm.dist = m.dist;
+    if (ext && ext.machs && ext.machs[i]) {
+      const em = ext.machs[i];
+      mm.pos = Array.isArray(em.pos) ? [...em.pos] : [0, 0];
+      mm.note = em.note || "";
+      const fp = em.freePorts || {};
+      mm.freePorts = {
+        "-2": (fp["-2"] || []).map(a => [...a]),
+        "-1": (fp["-1"] || []).map(a => [...a]),
+        "1":  (fp["1"]  || []).map(a => [...a]),
+        "2":  (fp["2"]  || []).map(a => [...a]),
+      };
+    } else {
+      // 没有 _editor：所有端口均当 freePort（旧文件 / 求解器原始输入兼容）
+      mm.pos = [0, 0];
+      mm.freePorts = { "-2":[], "-1":[], "1":[], "2":[] };
+      for (const k of [-2,-1,1,2]) {
+        const arr = m[String(k)] || m[k] || [];
+        mm.freePorts[k] = arr.map(a => [...a]);
+      }
+    }
+    return mm;
+  });
+  let newBelts = [];
+  if (ext && Array.isArray(ext.belts)) {
+    newBelts = ext.belts.map(b => ({
+      type: b.type, frm: b.frm, to: b.to,
+      frmPort: b.frmPort ? [...b.frmPort] : null,
+      toPort:  b.toPort  ? [...b.toPort]  : null,
+    }));
+  }
+  state = {
+    machs: newMachs, belts: newBelts,
+    n: obj.n || 10, m: obj.m || 10,
+    cell: state.cell || 40, selected: -1, tool: "pan",
+    viewRot: state.viewRot || 0,
+    problem: { name: obj.name||"", description: obj.description||"", note: obj.note||"" },
+  };
+  if (!ext) state.machs.forEach(m => { m.pos = findFreePos(m.size[0], m.size[1]); });
+  saveState(); renderAll();
+}
+
+// 把当前 state 编排成 .aic.json 兼容的对象（含 _editor 扩展字段，方便编辑器无损还原）。
+// 给"导出 .aic.json"按钮和"保存到编辑器后回写 preview.design"两处共用。
+function buildAicFromState() {
+  // 生成兼容 main.py 的 mach（包含 belts 端口 + freePorts，键用字符串）
+  const portMap = state.machs.map(() => ({ "-2":[], "-1":[], "1":[], "2":[] }));
+  state.belts.forEach(b => {
+    if (b.frmPort && portMap[b.frm]) portMap[b.frm][-b.type].push(b.frmPort);
+    if (b.toPort  && portMap[b.to])  portMap[b.to][ b.type].push(b.toPort);
+  });
+  state.machs.forEach((m, i) => {
+    if (!m.freePorts) return;
+    for (const k of [-2,-1,1,2]) {
+      (m.freePorts[k] || []).forEach(([s, p]) => {
+        const dup = portMap[i][k].some(q => q[0] === s && q[1] === p);
+        if (!dup) portMap[i][k].push([s, p]);
+      });
+    }
+  });
+  const machJson = state.machs.map((m, i) => {
+    const o = { type: m.type, size: [m.size[0], m.size[1]] };
+    if (m.type === "elec") o.dist = m.dist || 5;
+    for (const k of [-2,-1,1,2]) {
+      if (portMap[i][k].length > 0) o[String(k)] = portMap[i][k];
+    }
+    return o;
+  });
+  const beltJson = state.belts.map(b => [b.type, b.frm, b.to]);
+  const prob = state.problem || {};
+  const editorExt = {
+    machs: state.machs.map(m => ({
+      pos: [m.pos[0], m.pos[1]],
+      note: m.note || "",
+      freePorts: m.freePorts ? {
+        "-2": (m.freePorts[-2]||[]).map(p => [...p]),
+        "-1": (m.freePorts[-1]||[]).map(p => [...p]),
+        "1":  (m.freePorts[1] ||[]).map(p => [...p]),
+        "2":  (m.freePorts[2] ||[]).map(p => [...p]),
+      } : { "-2":[], "-1":[], "1":[], "2":[] },
+    })),
+    belts: state.belts.map(b => ({
+      type: b.type, frm: b.frm, to: b.to,
+      frmPort: b.frmPort ? [...b.frmPort] : null,
+      toPort:  b.toPort  ? [...b.toPort]  : null,
+    })),
+  };
+  return {
+    name: prob.name || "",
+    description: prob.description || "",
+    note: prob.note || "",
+    n: state.n, m: state.m,
+    mach: machJson,
+    belt: beltJson,
+    _editor: editorExt,
+  };
+}
+
+// 导出 .aic.json (给求解器 main.py 用)
+document.getElementById("btn-export-aic").onclick = () => {
+  const aic = buildAicFromState();
+  const safeName = (aic.name || "problem").replace(/[^\w\u4e00-\u9fa5\-.]+/g, "_") || "problem";
+  const blob = new Blob([JSON.stringify(aic, null, 2)], {type:"application/json"});
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = "aic_input.py"; a.click();
+  a.href = url; a.download = `${safeName}.aic.json`; a.click();
   URL.revokeObjectURL(url);
+  toast("已导出 " + a.download);
 };
-document.getElementById("btn-export-json").onclick = () => {
-  const data = JSON.stringify(state, null, 2);
-  const blob = new Blob([data], {type:"application/json"});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = "aic_problem.json"; a.click();
-  URL.revokeObjectURL(url);
-};
+
 document.getElementById("btn-import-json").onclick = () => document.getElementById("file-input").click();
 document.getElementById("file-input").onchange = e => {
   const f = e.target.files[0]; if (!f) return;
@@ -1572,18 +2347,19 @@ document.getElementById("file-input").onchange = e => {
   r.onload = () => {
     try {
       const obj = JSON.parse(r.result);
-      if (!Array.isArray(obj.machs)) throw new Error("invalid");
-      obj.machs.forEach(m => {
-        ensurePorts(m);
-        ensureFreePorts(m);
-        if (!Array.isArray(m.pos)) m.pos = [0, 0];
-      });
-      state = {
-        machs: obj.machs, belts: obj.belts || [],
-        n: obj.n || 10, m: obj.m || 10,
-        cell: obj.cell || 40, selected: -1, tool: obj.tool || "pan",
-      };
-      saveState(); renderAll(); toast("导入成功");
+      const kind = detectJsonKind(obj);
+      if (!kind) throw new Error("无法识别的 JSON（既不像 .aic.json 也不像 solution.json）");
+      const ok = enterPreview(obj);
+      if (ok) {
+        if (kind === "aic") {
+          toast(obj._editor ? "已进入预览：.aic.json（含编辑器布局）" : "已进入预览：.aic.json");
+        } else {
+          const hasDesign = obj.input && Array.isArray(obj.input.mach);
+          toast(hasDesign
+            ? "已进入预览：solution.json（含原始设计快照，可切换查看）"
+            : "已进入预览：solution.json（不含原始设计，无法切换至「原始设计」侧）");
+        }
+      }
     } catch(err) { toast("导入失败：" + err.message); }
   };
   r.readAsText(f); e.target.value = "";
@@ -1593,6 +2369,8 @@ document.getElementById("btn-load-example").onclick = () => {
     machs: JSON.parse(JSON.stringify(EXAMPLE.machs)),
     belts: JSON.parse(JSON.stringify(EXAMPLE.belts)),
     n: EXAMPLE.n, m: EXAMPLE.m, cell: state.cell, selected: 0, tool: state.tool,
+    viewRot: state.viewRot || 0,
+    problem: { name: "example_test1", description: "tests.py 中的 test 1 示例", note: "" },
   };
   saveState(); renderAll(); toast("已加载示例");
 };
@@ -1601,47 +2379,7 @@ document.getElementById("btn-clear").onclick = () => {
   state = defaultState(); saveState(); renderAll();
 };
 
-// ===== 求解结果加载 =====
-document.getElementById("btn-load-solution").onclick = () =>
-  document.getElementById("file-input-sol").click();
-
-document.getElementById("file-input-sol").onchange = e => {
-  const f = e.target.files[0]; if (!f) return;
-  const r = new FileReader();
-  r.onload = () => {
-    try {
-      const obj = JSON.parse(r.result);
-      if (!Array.isArray(obj.machs) || !Array.isArray(obj.belts)) {
-        throw new Error("不是合法的 solution.json");
-      }
-      solution = obj;
-      solSelected = -1;
-      document.body.classList.add("show-solution");
-      const banner = document.getElementById("solution-banner");
-      banner.style.display = "";
-      document.getElementById("solution-banner-text").textContent =
-        `已加载求解结果：${obj.machs.length} 个机器，${obj.belts.length} 条连接，网格 ${obj.n}×${obj.m} · 点击机器可高亮关联连接`;
-      document.getElementById("btn-clear-solution").style.display = "";
-      // 若 solution 的 n/m 跟当前状态不同，提示但不强行覆盖
-      if (obj.n !== state.n || obj.m !== state.m) {
-        toast(`提示：solution 的网格 ${obj.n}×${obj.m} 与当前 ${state.n}×${state.m} 不一致`);
-      }
-      renderAll();
-    } catch(err) { toast("加载失败：" + err.message); }
-  };
-  r.readAsText(f); e.target.value = "";
-};
-
-document.getElementById("btn-clear-solution").onclick = () => {
-  solution = null;
-  solSelected = -1;
-  document.body.classList.remove("show-solution");
-  document.getElementById("solution-banner").style.display = "none";
-  document.getElementById("btn-clear-solution").style.display = "none";
-  renderAll();
-};
-
-// 求解结果模式下：切换传送带/管道可见性
+// ===== 预览模式按钮绑定 =====
 function bindSolToggle(btnId, kind) {
   document.getElementById(btnId).onclick = (e) => {
     e.stopPropagation();
@@ -1652,6 +2390,19 @@ function bindSolToggle(btnId, kind) {
 }
 bindSolToggle("btn-toggle-belt", "belt");
 bindSolToggle("btn-toggle-pipe", "pipe");
+
+document.getElementById("btn-view-design").onclick = () => {
+  if (!preview || !preview.design) return;
+  preview.view = "design";
+  applyPreviewView();
+};
+document.getElementById("btn-view-solution").onclick = () => {
+  if (!preview || !preview.solutionResult) return;
+  preview.view = "solution";
+  applyPreviewView();
+};
+document.getElementById("btn-save-to-editor").onclick = () => savePreviewToEditor();
+document.getElementById("btn-exit-preview").onclick = () => exitPreview();
 
 // 初始化
 renderPalette();
@@ -1667,9 +2418,11 @@ function centerCanvas() {
   const wRect = wrap.getBoundingClientRect();
   const offX = cRect.left - wRect.left + wrap.scrollLeft;
   const offY = cRect.top  - wRect.top  + wrap.scrollTop;
-  // 求解区域在 canvas 内的中心
-  const solveCenterX = (PAD + state.m / 2) * cell;
-  const solveCenterY = (PAD + state.n / 2) * cell;
+  // 求解区域在 canvas 内的中心（视图旋转下行列视图互换）
+  const vsm = viewSolveM(); // 视图列数 = 屏幕水平方向格子数
+  const vsn = viewSolveN(); // 视图行数 = 屏幕竖直方向格子数
+  const solveCenterX = (PAD + vsm / 2) * cell;
+  const solveCenterY = (PAD + vsn / 2) * cell;
   wrap.scrollLeft = Math.max(0, offX + solveCenterX - wrap.clientWidth / 2);
   wrap.scrollTop  = Math.max(0, offY + solveCenterY - wrap.clientHeight / 2);
 }
