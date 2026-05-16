@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 @author: psz2007 (Entelecheia#2049)
+@coauthor: vortexer99 (kokobird)
 """
 
 # environment constants
@@ -8,6 +9,7 @@ _max_timeout = 1200 # (s)
 _worker_num = 12 # depends on your CPU core counts
 _debug_on = True # set to False to avoid output spam
 _optimal = False # setting this as True may lead to efficiency problems
+_edge_relaxation_flag = False # set to True to disallow belts/pipes to form U-shapes and small-loops, which may lead to running time change (0.8x-2x)
 _print_with_box_chars = True # set to False if box-drawing characters (┏┃┗┓━┛╋) are unavailable
 
 # mach parameter meaning:
@@ -366,6 +368,11 @@ for id in range(len(belt)):
             md.add(s == 1).only_enforce_if(tmp1)
             md.add(s == 0).only_enforce_if(tmp2)
             md.add_linear_expression_in_domain(s, cp_model.Domain.from_values([0, 2])).only_enforce_if(tmp3)
+    if _edge_relaxation_flag:
+        for i in range(n - 1):
+            for j in range(m - 1):
+                md.add(cur[gid(i, j, 0)] + cur[gid(i, j + 1, 0)] < 2)
+                md.add(cur[gid(i, j, 1)] + cur[gid(i + 1, j, 1)] < 2)
 
 for typ in [1, 2]:
     for i in range(tot):

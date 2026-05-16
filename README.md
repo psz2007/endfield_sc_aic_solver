@@ -18,7 +18,7 @@ Further instructions and detailed settings can be seen at the beginning of `main
 
 关于使用的说明参见 `main.py` 开头的英文注释。机器口子的标号方法比较丑，现在可以凑合着用。
 
-代码和注释绝大部分使用手搓，小部分使用 copilot，如果有误请在 issue 指出或发 pr。
+主代码逻辑和注释绝大部分使用手搓，小部分使用 copilot，如果有误请在 issue 指出或发 pr。
 
 运行方法 `pip install -r requirements.txt` 然后 `python main.py`。
 
@@ -42,7 +42,7 @@ Further instructions and detailed settings can be seen at the beginning of `main
 
 #### 端口与连接
 
-端口编号规则与 `main.py` 一致：边 `0 / 1 / 2 / 3 = 下 / 右 / 上 / 左`，距离 `pos` 从 DL / DR / UR / UL 角**逆时针**起算。编辑器自动按规则布置每个端口的可点圆点位置，无需手工换算。
+端口编号规则与 `main.py` 一致：边 `0 / 1 / 2 / 3 = 下 / 右 / 上 / 左`，距离 `pos` 从左下/右下/右上/左上角**逆时针**起算。编辑器自动按规则布置每个端口的可点圆点位置，无需手工换算。
 
 端口在编辑器中分两种状态：
 
@@ -58,7 +58,7 @@ Further instructions and detailed settings can be seen at the beginning of `main
 
 #### 关于机器朝向
 
-求解器内部已自动处理机器旋转（变量 `r`）与镜像（变量 `p`），所以**编辑器画布中机器的摆放只需要对应"未旋转"形态**——即输入数据应描述设施的原始朝向，旋转交给求解器决定。
+求解器内部已自动处理机器旋转（变量 `r`，变量 `p` 用于处理长方形设施交换长宽的情况），所以**编辑器画布中机器的摆放只需要对应"未旋转"形态**——即输入数据应描述设施的原始朝向，旋转交给求解器决定。
 
 ### 可视化求解结果
 
@@ -104,10 +104,10 @@ Further instructions and detailed settings can be seen at the beginning of `main
 - 将所有机器的口子编号；
 - 部分机器的管道的特定出口是对应特定产物的（如提纯机），这部分逻辑还没加进去；
 - 目前的仓库存取口限制为只能放在上边缘;
-- 机器摆放的时候旋转等细节被忽略了，希望在输入和输出端都有 GUI 界面。
+- ~~机器摆放的时候旋转等细节被忽略了，希望在输入和输出端都有 GUI 界面。~~（见 [`editor.html`](./editor.html)）
 
 ### Credit
 
 - Google OR-Tools
-- 提出问题的群友 kokobird
+- 提出问题以及制作可视化工具的群友 kokobird
 - 原题目作者
