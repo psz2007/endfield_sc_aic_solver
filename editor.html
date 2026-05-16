@@ -153,6 +153,18 @@
     background: rgba(0,0,0,0.35); white-space: nowrap; overflow: hidden;
     text-overflow: ellipsis; line-height: 1.2;
   }
+  /* 机器内部右上角旋转按钮：仅选中机器显示 */
+  .mach-box .rot-btn {
+    position: absolute; top: 2px; right: 2px;
+    width: 18px; height: 18px; padding: 0;
+    display: none; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.55); color: #ffeb3b;
+    border: 1px solid #ffeb3b; border-radius: 3px;
+    font-size: 13px; line-height: 1; cursor: pointer;
+    z-index: 11;
+  }
+  .mach-box .rot-btn:hover { background: #ffeb3b; color: #000; }
+  .mach-box.selected .rot-btn { display: flex; }
 
   /* 电桩覆盖范围 */
   .elec-aura {
@@ -177,7 +189,7 @@
 
   /* 求解结果叠加层 */
   body.show-solution .palette-group,
-  body.show-solution #btn-rotate-mach,
+  body.show-solution #btn-rotate-all,
   body.show-solution #btn-delete-mach,
   body.show-solution .tool-btn[data-tool="belt"],
   body.show-solution .tool-btn[data-tool="pipe"] { opacity: 0.4; pointer-events: none; }
@@ -320,7 +332,7 @@
     <div class="hint">
       <b>平移工具</b>：拖动机器或空白处平移；点机器选中；选中后<b>点边缘端口圆点循环切换</b>"空闲端口声明"（无 → 管出 → 带出 → 带入 → 管入）。<br>
       <b>传送带 / 管道工具</b>：点中一个机器边缘的端口圆点开始连接，再点另一个机器的端口完成；自动确定出/入方向。<br>
-      <b>右键</b>端口可删除占用它的连接 / 空闲声明。<br>
+      <b>右键</b>端口可删除占用它的连接 / 空闲声明；<b>删除连接时，被释放的端口会自动保留为空闲端口声明</b>。<br>
       <span style="color:#aaa;">空闲端口（虚线圆边）= 物理上有但未连传送带/管道，会作为求解器候选位置。</span>
     </div>
     <div class="legend">
@@ -346,7 +358,7 @@
       </div>
       <span class="info" id="cursor-info">拖动机器移动；空白处或中键拖动可平移画布；按 Delete 删除选中</span>
       <button id="btn-center">回到中心</button>
-      <button id="btn-rotate-mach">旋转(p切换)</button>
+      <button id="btn-rotate-all" title="把整个画布顺时针旋转 90°">整体旋转</button>
       <button id="btn-delete-mach" class="danger">删除选中</button>
     </div>
     <div id="solution-banner" class="solution-banner" style="display:none;">
@@ -628,6 +640,11 @@ function addMachFromPalette(p) {
 }
 
 function deleteMach(idx) {
+  // 删除机器前：把每条受影响 belt 的"另一端"还原为空闲端口声明（保留端口类型）；
+  // 被删除机器自己这一端无处可还原，跳过。
+  state.belts.forEach(b => {
+    if (b.frm === idx || b.to === idx) restoreFreePortsOfBelt(b, idx);
+  });
   state.machs.splice(idx, 1);
   state.belts = state.belts.filter(b => b.frm !== idx && b.to !== idx);
   state.belts.forEach(b => {
@@ -758,6 +775,7 @@ function renderCanvas() {
       <div class="id-num">${idx}</div>
       <div class="meta">${m.type} ${h}×${w}${m.dist?` r${m.dist}`:''}</div>
       ${m.note ? `<div class="note">${escapeHtml(m.note)}</div>` : ""}
+      <button class="rot-btn" data-rot="1" title="顺时针旋转 90°">⟳</button>
     `;
     box.addEventListener("mousedown", e => onMachMouseDown(e, idx));
     addPortButtons(box, idx, cell);
@@ -1099,14 +1117,46 @@ function onPortClick(idx, side, pos) {
 }
 
 function removeBelt(beltIdx) {
+  // 删除连接时把它占用的两端端口还原为"空闲端口声明"，保留端口类型，
+  // 方便用户日后重新连接 / 让求解器仍把这个口子作为候选位置。
+  const b = state.belts[beltIdx];
+  if (b) restoreFreePortsOfBelt(b);
   state.belts.splice(beltIdx, 1);
   saveState(); renderAll();
+}
+
+// 把一条 belt 两端的端口还原回对应机器的 freePorts（保留连接所用的 kind）。
+// belt.type = 1 (传送带) → frm 端 kind = -1 (传送带出)，to 端 kind = +1 (传送带入)
+// belt.type = 2 (管道)   → frm 端 kind = -2 (管道出)，  to 端 kind = +2 (管道入)
+// `skipMachIdx` 跳过这个机器（如机器即将被删除，无需还原到不存在的机器上）。
+// `validPort(idx, side, pos)` 可选；若提供且对某端返回 false，则该端不还原。
+function restoreFreePortsOfBelt(b, skipMachIdx, validPort) {
+  const ends = [
+    { mIdx: b.frm, port: b.frmPort, kind: -b.type },
+    { mIdx: b.to,  port: b.toPort,  kind:  b.type },
+  ];
+  for (const { mIdx, port, kind } of ends) {
+    if (mIdx == null || mIdx < 0 || !port) continue;
+    if (mIdx === skipMachIdx) continue;
+    if (validPort && !validPort(mIdx, port[0], port[1])) continue;
+    const m = state.machs[mIdx];
+    if (!m) continue;
+    ensureFreePorts(m);
+    const [s, p] = port;
+    removeFreePortAt(mIdx, s, p);     // 去掉该位置上其它 kind 的旧声明
+    m.freePorts[kind].push([s, p]);
+  }
 }
 
 // ========== 拖动 ==========
 let drag = null;
 function onMachMouseDown(e, idx) {
   if (e.button !== 0) return;
+  // 旋转按钮：不进入拖拽 / 选择逻辑，交给 click handler
+  if (e.target && e.target.dataset && e.target.dataset.rot) {
+    e.stopPropagation();
+    return;
+  }
   // 仅在 pan 工具下允许拖动
   if (state.tool === "pan") {
     startDrag(e, idx);
@@ -1283,9 +1333,16 @@ function cleanupPorts(m) {
   const [h, w] = m.size;
   const validPort = (s, pos) => (s === 0 || s === 2) ? (pos >= 0 && pos < w) : (pos >= 0 && pos < h);
   const idx = state.machs.indexOf(m);
+  // 检查任意机器/位置是否仍合法（仅对当前 m 用 validPort，其它机器一律视为合法）
+  const validForMach = (mi, s, p) => mi === idx ? validPort(s, p) : true;
   state.belts = state.belts.filter(b => {
-    if (b.frm === idx && b.frmPort && !validPort(b.frmPort[0], b.frmPort[1])) return false;
-    if (b.to  === idx && b.toPort  && !validPort(b.toPort[0],  b.toPort[1]))  return false;
+    const frmBad = b.frm === idx && b.frmPort && !validPort(b.frmPort[0], b.frmPort[1]);
+    const toBad  = b.to  === idx && b.toPort  && !validPort(b.toPort[0],  b.toPort[1]);
+    if (frmBad || toBad) {
+      // 把仍合法的另一端还原为空闲端口声明，保留端口类型
+      restoreFreePortsOfBelt(b, undefined, validForMach);
+      return false;
+    }
     return true;
   });
   if (m.freePorts) {
@@ -1322,7 +1379,7 @@ function renderBeltList() {
     };
     div.querySelector(".del-btn").onclick = (e) => {
       e.stopPropagation();
-      state.belts.splice(i, 1); saveState(); renderAll();
+      removeBelt(i);
     };
     list.appendChild(div);
   });
@@ -1473,10 +1530,16 @@ function rotPortCW(side, pos) {
   return [(side + 3) % 4, pos];
 }
 
-document.getElementById("btn-rotate-mach").onclick = () => {
-  if (state.selected < 0) return;
-  const idx = state.selected;
+document.getElementById("btn-rotate-all").onclick = () => {
+  rotateAllCW();
+};
+
+// 单个机器顺时针 90° 旋转：端口几何变换 + 尺寸交换
+// 不改变 pos（左上角格点），只就地旋转
+function rotateMachine(idx) {
+  if (idx == null || idx < 0) return;
   const m = state.machs[idx];
+  if (!m) return;
   // 1. 端口变换
   state.belts.forEach(b => {
     if (b.frm === idx && b.frmPort) b.frmPort = rotPortCW(b.frmPort[0], b.frmPort[1]);
@@ -1494,7 +1557,49 @@ document.getElementById("btn-rotate-mach").onclick = () => {
   // 2. 尺寸交换
   m.size = [m.size[1], m.size[0]];
   clipPos(m); saveState(); renderAll();
-};
+}
+
+// 整体顺时针旋转 90°：网格 (n,m) → (m,n)；
+// 每个机器左上角 (x,y, h×w) → (y, n - x - h, w×h)；端口同步 rotPortCW。
+function rotateAllCW() {
+  const oldN = state.n;
+  state.machs.forEach(m => {
+    const [x, y] = m.pos;
+    const [h, w] = m.size;
+    m.pos = [y, oldN - x - h];
+    m.size = [w, h];
+    if (m.freePorts) {
+      const newFree = { "-2":[], "-1":[], "1":[], "2":[] };
+      for (const k of [-2,-1,1,2]) {
+        (m.freePorts[k] || []).forEach(([s, p]) => {
+          newFree[k].push(rotPortCW(s, p));
+        });
+      }
+      m.freePorts = newFree;
+    }
+  });
+  state.belts.forEach(b => {
+    if (b.frmPort) b.frmPort = rotPortCW(b.frmPort[0], b.frmPort[1]);
+    if (b.toPort)  b.toPort  = rotPortCW(b.toPort[0],  b.toPort[1]);
+  });
+  // 网格尺寸交换
+  [state.n, state.m] = [state.m, state.n];
+  saveState(); renderAll();
+  toast(`整体顺时针旋转 90°，网格 ${state.n}×${state.m}`);
+}
+
+// 机器内部右上角"⟳"按钮：事件委托
+document.getElementById("canvas").addEventListener("click", e => {
+  const btn = e.target.closest && e.target.closest("[data-rot]");
+  if (!btn) return;
+  const box = btn.closest(".mach-box");
+  if (!box) return;
+  const idx = parseInt(box.dataset.idx, 10);
+  if (Number.isNaN(idx)) return;
+  e.stopPropagation();
+  state.selected = idx;
+  rotateMachine(idx);
+});
 
 document.getElementById("btn-delete-mach").onclick = () => {
   if (state.selected < 0) return;
